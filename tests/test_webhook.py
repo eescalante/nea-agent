@@ -539,6 +539,77 @@ async def test_reset_no_depende_de_la_allowlist_de_respuesta(respx_mock):
     assert len(ctx.llm.calls) == 0
 
 
+# ------------------------------------- comando /refrescar (fork Quasar) ---
+
+
+class EspiaDePerfil:
+    """Proveedor de perfil que cuenta cuántas veces lo vencieron."""
+
+    def __init__(self, nombre: str = "Sofía") -> None:
+        self.refrescos = 0
+        self.nombre = nombre
+
+    def refrescar(self) -> None:
+        self.refrescos += 1
+
+    async def get(self):
+        from app.profile import BusinessProfile
+
+        return BusinessProfile(agent_name=self.nombre)
+
+
+async def _enviar(ctx, texto: str, wamid: str) -> None:
+    app = create_app(ctx=ctx)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://bot.test") as c:
+        await c.post("/webhook", content=wa_body(text=texto, wamid=wamid))
+        await asyncio.sleep(0.3)
+    await ctx.crm.aclose()
+
+
+async def test_refrescar_relee_el_perfil_sin_borrar_la_conversacion(respx_mock):
+    ctx = make_ctx(make_settings(tester_wa_ids=IDENTITY))
+    ctx.profile = EspiaDePerfil("Sofía")
+    routes = mock_crm_basics(respx_mock)
+    reset_route = respx_mock.post(f"{CRM_URL}/api/bot/reset").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    await ctx.store.add_message(conv.id, "user", "hola")
+    await ctx.store.update_conversation(conv.id, crm_conversation_id=CRM_CONV_ID)
+
+    await _enviar(ctx, "/refrescar", "wamid.rfr1")
+
+    assert ctx.profile.refrescos == 1
+    assert reset_route.call_count == 0  # no es un /reset
+    assert len(await ctx.store.recent_messages(conv.id, 50)) == 1  # memoria intacta
+    assert len(ctx.llm.calls) == 0  # el comando jamás llega al LLM
+    assert routes["messages"].call_count == 1
+    enviado = json.loads(routes["messages"].calls[0].request.content)
+    assert "ahora atiende Sofía" in json.dumps(enviado, ensure_ascii=False)
+
+
+async def test_refrescar_sin_ser_tester_es_texto_normal(respx_mock):
+    ctx = make_ctx(make_settings(tester_wa_ids=""))
+    ctx.profile = EspiaDePerfil()
+    routes = mock_crm_basics(respx_mock)
+    await _enviar(ctx, "/refrescar", "wamid.rfr2")
+    assert ctx.profile.refrescos == 0
+    assert len(ctx.llm.calls) == 1  # se trató como un mensaje cualquiera
+    assert routes["messages"].call_count == 1
+
+
+async def test_reset_tambien_refresca_el_perfil(respx_mock):
+    ctx = make_ctx(make_settings(tester_wa_ids=IDENTITY))
+    ctx.profile = EspiaDePerfil()
+    mock_crm_basics(respx_mock)
+    respx_mock.post(f"{CRM_URL}/api/bot/reset").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+    await _enviar(ctx, "/reset", "wamid.rfr3")
+    assert ctx.profile.refrescos == 1
+
+
 # ------------------------------------------------- URL secreta (sin firma) ---
 
 URL_TOKEN = "t0ken-de-url-con-mas-de-32-caracteres-0123"

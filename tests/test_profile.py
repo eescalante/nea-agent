@@ -104,6 +104,27 @@ async def test_provider_sirve_el_ultimo_conocido_si_crm_cae():
     assert p2.agent_name == p1.agent_name == "Sofi"
 
 
+async def test_refrescar_relee_el_perfil_sin_esperar_el_ttl():
+    """Fork Quasar: /refrescar y /reset no esperan los 5 minutos del TTL."""
+    otro = {"profile": {"name": "Sofía"}, "kb": ""}
+    crm = FakeCrm([PAYLOAD, otro])
+    provider = ProfileProvider(crm, ttl=600)
+    assert (await provider.get()).agent_name == "Sofi"
+    provider.refrescar()
+    assert (await provider.get()).agent_name == "Sofía"
+    assert crm.calls == 2
+
+
+async def test_refrescar_con_crm_caido_conserva_el_ultimo_conocido():
+    """Fork Quasar: refrescar nunca deja a Nea sin agente."""
+    crm = FakeCrm([PAYLOAD, CrmError("caído")])
+    provider = ProfileProvider(crm, ttl=600)
+    await provider.get()
+    provider.refrescar()
+    assert (await provider.get()).agent_name == "Sofi"
+    assert crm.calls == 2
+
+
 async def test_resolve_profile_sin_provider_usa_settings():
     ctx = SimpleNamespace(profile=None, settings=SimpleNamespace(agent_name="Max"))
     prof = await resolve_profile(ctx)
