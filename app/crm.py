@@ -360,13 +360,13 @@ class CrmClient:
         return True if resultado is None else resultado
 
     async def create_booking(
-        self, conversation_id: str, start_utc: str
+        self, conversation_id: str, start_utc: str, notes: str | None = None
     ) -> dict[str, Any]:
-        resp = await self._request(
-            "POST",
-            "/api/bot/bookings",
-            json={"conversationId": conversation_id, "startUtc": start_utc},
-        )
+        cuerpo: dict[str, Any] = {"conversationId": conversation_id, "startUtc": start_utc}
+        # Fork Quasar: el CRM acepta notas en la cita; solo se mandan si hay algo
+        if notes:
+            cuerpo["notes"] = notes
+        resp = await self._request("POST", "/api/bot/bookings", json=cuerpo)
         if resp.status_code == 409:
             raise _booking_conflict(resp)
         _404_de_agenda(resp, "bookings")

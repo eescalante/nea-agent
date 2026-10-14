@@ -172,6 +172,9 @@ class Settings(BaseSettings):
     # turno que llega con la respuesta vencida, con timeout corto; si el CRM no
     # contesta, se queda la última respuesta. 0 = en cada turno.
     agenda_probe_ttl_seconds: float = Field(default=60.0, ge=0)
+    # Fork Quasar: no reservar una cita sin el nombre del cliente en la ficha
+    # (el de su perfil de WhatsApp no cuenta). Apagado = como la oficial.
+    cita_exige_nombre: bool = False
 
     # Guardarraíles y tiempos
     allowed_wa_ids: str = ""

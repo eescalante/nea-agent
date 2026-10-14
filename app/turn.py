@@ -662,7 +662,13 @@ async def run_turn(
         ]
 
     # --- LLM con tools ----------------------------------------------------
-    runtime = ToolRuntime(ctx, conv, str(crm_conv_id), profile=profile)
+    runtime = ToolRuntime(
+        ctx,
+        conv,
+        str(crm_conv_id),
+        profile=profile,
+        ficha=(context.get("contact") or {}).get("ficha"),  # Fork Quasar
+    )
     try:
         final_text = await _tool_loop(ctx, messages, runtime)
     except LlmExhausted as exc:

@@ -368,7 +368,11 @@ class BrainsCrmClient(CrmClient):
         return {"slots": list(data.get("slots") or []), "query": data.get("query")}
 
     async def create_booking(
-        self, conversation_id: str, start_utc: str, reminder_consent: bool = False
+        self,
+        conversation_id: str,
+        start_utc: str,
+        reminder_consent: bool = False,
+        notes: str | None = None,  # Fork Quasar: el contrato cloud no lleva notas; se ignora
     ) -> dict[str, Any]:
         return await self._agendar("POST", conversation_id, start_utc, "bookings", reminder_consent=reminder_consent)
 

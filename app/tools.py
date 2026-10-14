@@ -55,6 +55,16 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    # Fork Quasar: datos de contacto propios, no perdidos en «notas»
+                    "nombre": {
+                        "type": "string",
+                        "description": "Nombre de pila tal cual lo dijo el lead (no el de su perfil de WhatsApp)",
+                    },
+                    "apellido": {"type": "string"},
+                    "email": {
+                        "type": "string",
+                        "description": "Email de contacto, solo si el lead lo dio",
+                    },
                     "rubro": {"type": "string"},
                     "rol": {
                         "type": "string",
@@ -367,6 +377,22 @@ def _zona_del_negocio(ctx: AppContext) -> ZoneInfo:
         return ZoneInfo("America/Mexico_City")
 
 
+def _tiene_nombre(ficha: dict[str, Any]) -> bool:
+    """Fork Quasar: el lead dijo su nombre (está en la ficha, no en su perfil)."""
+    return bool(str(ficha.get("nombre") or "").strip())
+
+
+def _notas_de_la_cita(ficha: dict[str, Any]) -> str | None:
+    """Fork Quasar: lo que el operador ve en Citas: quién es, cómo contactarlo y qué busca."""
+    nombre = " ".join(
+        str(ficha.get(campo) or "").strip() for campo in ("nombre", "apellido")
+    ).strip()
+    email = str(ficha.get("email") or "").strip()
+    interes = str(ficha.get("dolor_principal") or ficha.get("notas") or "").strip()
+    partes = [parte for parte in (nombre, email, interes) if parte]
+    return " · ".join(partes)[:500] or None
+
+
 def _slots_for_llm(slots: list[OfferedSlot]) -> list[dict[str, str]]:
     return [{"start_utc": _iso_z(s.start_utc), "label": s.label} for s in slots]
 
@@ -380,11 +406,15 @@ class ToolRuntime:
         conv: Conversation,
         crm_conversation_id: str,
         profile: BusinessProfile | None = None,
+        ficha: dict[str, Any] | None = None,
     ) -> None:
         self._ctx = ctx
         self._conv = conv
         self._crm_conv_id = crm_conversation_id
         self._profile = profile or BusinessProfile()
+        # Fork Quasar: la ficha vigente (la del contexto + lo que se guarde en
+        # este turno), para exigir el nombre y armar las notas de la cita.
+        self._ficha: dict[str, Any] = dict(ficha or {})
         # Efectos observables por turn.py:
         self.handoff_reason: str | None = None  # se ejecuta DESPUÉS de la despedida
         self.booked = False
@@ -431,7 +461,10 @@ class ToolRuntime:
         ficha = {k: v for k, v in args.items() if v is not None}
         if not ficha:
             return {"ok": True, "nota": "sin campos nuevos"}
-        await self._ctx.crm.put_ficha(self._crm_conv_id, ficha)
+        respuesta = await self._ctx.crm.put_ficha(self._crm_conv_id, ficha)
+        # Fork Quasar: el CRM devuelve la ficha completa; si no la trae, merge local
+        completa = respuesta.get("ficha") if isinstance(respuesta, dict) else None
+        self._ficha = dict(completa) if completa else {**self._ficha, **ficha}
         return {"ok": True}
 
     async def _propose_slots(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -714,6 +747,20 @@ class ToolRuntime:
         chosen, error = await self._resolve_offered(args, "book_session")
         if error is not None or chosen is None:
             return error or {"ok": False, "error": "slot_no_ofrecido"}
+        # Fork Quasar: sin nombre en la ficha no se reserva; el modelo lo pide y reintenta
+        if getattr(self._ctx.settings, "cita_exige_nombre", False) and not _tiene_nombre(
+            self._ficha
+        ):
+            return {
+                "ok": False,
+                "error": "falta_nombre",
+                "detalle": (
+                    "todavía no se reservó. Pide nombre y apellido (y un email si "
+                    "quiere darlo), guárdalos con update_ficha y vuelve a llamar "
+                    "book_session con el MISMO start_utc. El nombre del perfil de "
+                    "WhatsApp no cuenta: tiene que decirlo el lead"
+                ),
+            }
         try:
             consent = args.get("recordatorios_aceptados") is True
             if getattr(self._ctx.crm, "supports_agenda_v2", False):
@@ -722,7 +769,9 @@ class ToolRuntime:
                 )
             else:
                 result = await self._ctx.crm.create_booking(
-                    self._crm_conv_id, _iso_z(chosen.start_utc)
+                    self._crm_conv_id,
+                    _iso_z(chosen.start_utc),
+                    notes=_notas_de_la_cita(self._ficha),  # Fork Quasar
                 )
         except SlotTaken as exc:
             # El slot se ocupó entre oferta y elección: alternativas frescas.
