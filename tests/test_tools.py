@@ -9,7 +9,7 @@ import pytest
 
 from app.state import OfferedSlot
 from app.tools import ToolRuntime
-from tests.conftest import CRM_CONV_ID, CRM_URL, IDENTITY, make_ctx
+from tests.conftest import CRM_CONV_ID, CRM_URL, IDENTITY, make_ctx, make_settings
 
 SLOT_ISO = "2026-07-20T16:00:00Z"
 SLOT_DT = datetime(2026, 7, 20, 16, 0, tzinfo=timezone.utc)
@@ -202,6 +202,91 @@ async def test_update_ficha_manda_lo_que_haya(runtime_y_ctx, respx_mock):
     # drift tolerado: se manda tal cual, el CRM normaliza flojo
     assert body["ficha"]["rol"] == "el dueño mero mero"
     assert body["ficha"]["campo_raro"] == "x"
+
+
+# ------------------------------- datos del cliente en la cita (fork Quasar) ---
+
+
+async def _runtime_que_exige_nombre(ficha=None):
+    """Runtime con CITA_EXIGE_NOMBRE encendida y el slot de prueba ofrecido."""
+    ctx = make_ctx(make_settings(cita_exige_nombre=True))
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    await ctx.store.replace_offered_slots(
+        conv.id,
+        [OfferedSlot(conversation_id=conv.id, start_utc=SLOT_DT, end_utc=None, label="lunes 20 de julio, 10:00 am")],
+    )
+    return ToolRuntime(ctx, conv, CRM_CONV_ID, ficha=ficha), ctx
+
+
+def _mock_booking_y_ficha(respx_mock, ficha_completa=None):
+    bookings = respx_mock.post(f"{CRM_URL}/api/bot/bookings").mock(
+        return_value=httpx.Response(201, json={"bookingId": "bk_1", "label": "x"})
+    )
+    respx_mock.put(f"{CRM_URL}/api/bot/ficha").mock(
+        return_value=httpx.Response(200, json={"ficha": ficha_completa or {}, "stageMoved": False})
+    )
+    return bookings
+
+
+def test_la_ficha_ofrece_nombre_apellido_y_email():
+    from app.tools import TOOL_SCHEMAS
+
+    ficha = next(t for t in TOOL_SCHEMAS if t["function"]["name"] == "update_ficha")
+    propiedades = ficha["function"]["parameters"]["properties"]
+    assert {"nombre", "apellido", "email"} <= set(propiedades)
+
+
+async def test_sin_nombre_no_reserva_si_se_exige(respx_mock):
+    runtime, ctx = await _runtime_que_exige_nombre()
+    bookings = _mock_booking_y_ficha(respx_mock)
+    result = await runtime.execute(
+        "book_session", {"start_utc": SLOT_ISO, "dia_confirmado": "el lunes"}
+    )
+    assert result["ok"] is False
+    assert result["error"] == "falta_nombre"
+    assert bookings.call_count == 0  # jamás llegó al CRM
+    assert runtime.booked is False
+    # el horario sigue ofrecido: puede reintentar con el mismo start_utc
+    assert len(await ctx.store.get_offered_slots(runtime._conv.id)) == 1
+    await ctx.crm.aclose()
+
+
+async def test_con_nombre_guardado_en_el_turno_reserva_con_notas(respx_mock):
+    runtime, ctx = await _runtime_que_exige_nombre()
+    bookings = _mock_booking_y_ficha(respx_mock)  # el mock devuelve ficha vacía: merge local
+    await runtime.execute(
+        "update_ficha",
+        {"nombre": "Ana", "apellido": "Pérez", "email": "ana@example.com", "dolor_principal": "Río, 2 adultos, noviembre"},
+    )
+    result = await runtime.execute(
+        "book_session", {"start_utc": SLOT_ISO, "dia_confirmado": "el lunes"}
+    )
+    assert result["ok"] is True
+    body = json.loads(bookings.calls[0].request.content)
+    assert body["notes"] == "Ana Pérez · ana@example.com · Río, 2 adultos, noviembre"
+    await ctx.crm.aclose()
+
+
+async def test_con_nombre_en_la_ficha_del_contexto_reserva(respx_mock):
+    runtime, ctx = await _runtime_que_exige_nombre(ficha={"nombre": "Luis"})
+    bookings = _mock_booking_y_ficha(respx_mock)
+    result = await runtime.execute(
+        "book_session", {"start_utc": SLOT_ISO, "dia_confirmado": "el lunes"}
+    )
+    assert result["ok"] is True
+    assert json.loads(bookings.calls[0].request.content)["notes"] == "Luis"
+    await ctx.crm.aclose()
+
+
+async def test_sin_exigir_nombre_reserva_igual_y_sin_notas_vacias(runtime_y_ctx, respx_mock):
+    """Con la variable apagada, Nea se comporta como la oficial."""
+    runtime, ctx, conv = runtime_y_ctx
+    bookings = _mock_booking_y_ficha(respx_mock)
+    result = await runtime.execute(
+        "book_session", {"start_utc": SLOT_ISO, "dia_confirmado": "el lunes"}
+    )
+    assert result["ok"] is True
+    assert "notes" not in json.loads(bookings.calls[0].request.content)
 
 
 async def test_handoff_se_difiere_al_final_del_turno(runtime_y_ctx, respx_mock):
