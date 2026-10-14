@@ -57,6 +57,9 @@ VIGILANCIA_MAXIMA = timedelta(hours=24)
 # Comando de pruebas: reinicia la memoria de ESA conversación. Disponible SOLO
 # para identidades de TESTER_WA_IDS (vacía = comando apagado).
 RESET_COMMANDS = frozenset({"/reset", "#reset"})
+# Fork Quasar: relee el perfil de la pantalla Agente sin esperar el TTL. Mismas
+# reglas que /reset: solo identidades de TESTER_WA_IDS.
+REFRESCAR_COMMANDS = frozenset({"/refrescar", "#refrescar"})
 
 
 def _agent_tz(settings: Any) -> ZoneInfo:
@@ -495,6 +498,15 @@ async def run_turn(
         await _run_reset(ctx, conv, identity)
         return
 
+    # --- Comando /refrescar (fork Quasar; líneas de prueba) ---------------
+    # Relee el perfil sin tocar la conversación: corregir el agente en plena
+    # demo sin perder el hilo.
+    if canonical_identity(identity) in settings.tester_identities and any(
+        (m.text or "").strip().lower() in REFRESCAR_COMMANDS for m in inbound
+    ):
+        await _run_refrescar(ctx, conv, identity)
+        return
+
     # --- Gate 1.5: conversación ya cerrada por no ir a ningún lado --------
     # El agente ya se despidió amable; contestarle el relleno ("gracias",
     # "ok", un emoji) sería perseguir. Pero el cierre no es para siempre: un
@@ -812,13 +824,8 @@ async def _olvidar_si_es_otra(
 async def _run_reset(ctx: AppContext, conv: Any, identity: str) -> None:
     """Reinicio de pruebas: CRM primero (ficha limpia + IA reactivada, para que
     la confirmación no rebote con 409 ai_paused) y luego la memoria local."""
-    crm_conv_id = conv.crm_conversation_id
-    if not crm_conv_id:
-        try:
-            context = await _fetch_context(ctx, identity)
-        except CrmUnreachable:
-            context = None
-        crm_conv_id = ((context or {}).get("conversation") or {}).get("id")
+    _refrescar_perfil(ctx)  # Fork Quasar: el reinicio de pruebas también relee el perfil
+    crm_conv_id = await _crm_conv_id_de(ctx, conv, identity)
     if crm_conv_id:
         try:
             await ctx.crm.post_reset(str(crm_conv_id))
@@ -833,6 +840,41 @@ async def _run_reset(ctx: AppContext, conv: Any, identity: str) -> None:
             str(crm_conv_id),
             "🧹 Listo: memoria reiniciada. Te trato como lead nuevo desde tu "
             "próximo mensaje. (Comando de pruebas, solo líneas autorizadas.)",
+        )
+
+
+async def _crm_conv_id_de(ctx: AppContext, conv: Any, identity: str) -> str | None:
+    """La conversación del CRM de esta identidad: la recordada o, si no, la del contexto."""
+    crm_conv_id = conv.crm_conversation_id
+    if not crm_conv_id:
+        try:
+            context = await _fetch_context(ctx, identity)
+        except CrmUnreachable:
+            context = None
+        crm_conv_id = ((context or {}).get("conversation") or {}).get("id")
+    return str(crm_conv_id) if crm_conv_id else None
+
+
+def _refrescar_perfil(ctx: AppContext) -> None:
+    """Fork Quasar: vence el perfil en memoria, si hay proveedor (en tests puede no haberlo)."""
+    proveedor = getattr(ctx, "profile", None)
+    if proveedor is not None and hasattr(proveedor, "refrescar"):
+        proveedor.refrescar()
+
+
+async def _run_refrescar(ctx: AppContext, conv: Any, identity: str) -> None:
+    """Fork Quasar: relee el perfil del CRM y confirma qué agente quedó, sin tocar la conversación."""
+    _refrescar_perfil(ctx)
+    perfil = await resolve_profile(ctx)
+    logger.info("perfil refrescado a pedido de %s: %s", identity, perfil.agent_name)
+    crm_conv_id = await _crm_conv_id_de(ctx, conv, identity)
+    if crm_conv_id:
+        await _send(
+            ctx,
+            conv.id,
+            crm_conv_id,
+            f"🔄 Perfil actualizado: ahora atiende {perfil.agent_name}. "
+            "(Comando de pruebas, solo líneas autorizadas.)",
         )
 
 

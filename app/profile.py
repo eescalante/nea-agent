@@ -117,6 +117,13 @@ class ProfileProvider:
         self._fetched_at: float = 0.0
         self._warned_minimal = False
 
+    def refrescar(self) -> None:
+        """Fork Quasar: vence el perfil en memoria; el próximo get() lo relee del CRM.
+
+        No borra `_cached`: si el CRM no contesta, get() sigue con el último conocido.
+        """
+        self._fetched_at = float("-inf")
+
     async def get(self) -> BusinessProfile:
         now = time.monotonic()
         if self._cached is not None and not self._cached.cloud and (now - self._fetched_at) < self._ttl:
