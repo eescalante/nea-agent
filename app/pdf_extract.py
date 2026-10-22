@@ -4,8 +4,10 @@ import sys
 
 
 def main() -> None:
-    # Production runs Linux. The parent also enforces a wall-clock timeout.
-    if sys.platform != "win32":
+    # Los límites de recursos se aplican en producción Linux. macOS informa
+    # RLIM_INFINITY con una forma que impide reducirlo de manera portable; el
+    # proceso padre conserva allí el timeout y el límite de entrada.
+    if sys.platform.startswith("linux"):
         import resource
         resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024,) * 2)
         resource.setrlimit(resource.RLIMIT_CPU, (3, 3))
