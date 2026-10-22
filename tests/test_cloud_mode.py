@@ -54,6 +54,22 @@ class TestBandera:
     def test_cualquier_otro_valor_es_el_modo_de_siempre(self) -> None:
         assert Settings(vocero_mode="meta").cloud_mode is False
 
+    def test_dispatch_recibe_despachos_sin_activar_cloud(self) -> None:
+        configuracion = Settings(vocero_mode="dispatch")
+
+        assert configuracion.dispatch_mode is True
+        assert configuracion.cloud_mode is False
+        assert configuracion.recibe_despachos is True
+
+    def test_dispatch_usa_la_clave_del_gateway_del_crm(self) -> None:
+        configuracion = Settings(
+            vocero_mode="dispatch",
+            crm_bot_api_key="clave-del-gateway",
+            crm_brain_secret="clave-cloud",
+        )
+
+        assert configuracion.secreto_despacho == "clave-del-gateway"
+
 
 # ── La firma del despacho ─────────────────────────────────────────────────
 
