@@ -19,7 +19,7 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
 | La capa de persona del negocio | `app/profile.py` (CRM → brief local → mínimo) |
 | Las acciones del bot | `app/tools.py` + orquestación en `app/turn.py` |
 | El contrato con el CRM | `app/crm.py` (espejo del bot gateway de vocero) |
-| Vocero multitenant (modo cloud) | `app/dispatch.py` (entrada) · `app/crm_brains.py` (salida) |
+| Vocero/Nagai por despacho | `app/dispatch.py` (entrada); `VOCERO_MODE=dispatch` usa `/api/bot/*`, `cloud` usa `app/crm_brains.py` |
 | Atender a VARIOS negocios a la vez | `app/multiorg.py` |
 | Webhook/firma/dedup/relay | `app/webhook.py` · `app/relay.py` |
 | Coalesce y seguimiento | `app/coalesce.py` · `app/followup.py` |
@@ -32,6 +32,10 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
 
 - **El bot NUNCA llama a graph.facebook.com para enviar.** Todo por
   `POST {CRM}/api/bot/messages`.
+- **Despacho de instancia única** (`VOCERO_MODE=dispatch`): el CRM recibe y
+  normaliza todos los canales, firma con `BOT_API_KEY`; Nea valida con
+  `CRM_BOT_API_KEY` y responde por `/api/bot/*`. No monta el webhook de Meta
+  ni ejecuta el relay.
 - **Los NUNCA del chasis** (inventar, fingir humano, jerga, datos sensibles,
   seguir vendiendo a un hostil) viven en `app/prompt.py` — cualquier cambio
   de prompt re-corre una verificación de comportamiento end-to-end.

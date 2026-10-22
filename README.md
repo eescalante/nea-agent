@@ -89,6 +89,24 @@ Herramientas del LLM: `update_ficha` (calificación), `propose_slots` /
 `handoff` (pausa la IA en el CRM). En modo cloud, con la agenda v2 de Vocero
 Cloud, también `list_bookings` y `cancel_session`.
 
+### Modo dispatch: una instancia multicanal de Vocero/Nagai
+
+Con `VOCERO_MODE=dispatch`, Meta y los conectores hablan primero con el CRM.
+El CRM normaliza WhatsApp, Instagram, Messenger, TikTok, Telegram y Email, y
+entrega todos por la misma ruta:
+
+```
+Canales ──► Vocero/Nagai ── POST /vocero/dispatch ──► Nea
+                 ▲                                      │
+                 └────────── POST /api/bot/* ───────────┘
+```
+
+El despacho se firma con `BOT_API_KEY`, que Nea configura como
+`CRM_BOT_API_KEY`. En este modo Nea no monta el webhook de Meta ni ejecuta el
+relay: el mensaje ya está persistido en la Bandeja. La respuesta vuelve por el
+gateway del CRM y este selecciona el transporte correcto, incluido SMTP para
+Email.
+
 ### Modo cloud (opcional): detrás de un Vocero multitenant
 
 Con `VOCERO_MODE=cloud` el camino se invierte — el CRM recibe el mensaje y se
@@ -339,8 +357,8 @@ atrasada no se arregla reiniciando el contenedor. No lleva secretos ni URLs.
 | `version` | La versión horneada en la imagen (`NEA_VERSION`). `dev` si se construyó sin ella |
 | `commit` | Los primeros 7 caracteres del commit. Solo aparece si se conoce |
 | `commitVerified` | `true` si el commit salió del build; `false` si es el `SOURCE_COMMIT` que la plataforma puso en el entorno al arrancar, que puede estar desfasado |
-| `mode` | `estándar`, `cloud` o `multiorg`, con acento |
-| `relay` | Solo en modo estándar: en cloud el CRM ya tiene el mensaje. `null` si no se pudo leer la cola, y el código sigue en 200 |
+| `mode` | `estándar`, `dispatch`, `cloud` o `multiorg`, con acento |
+| `relay` | Solo en modo estándar: en `dispatch` y `cloud` el CRM ya tiene el mensaje. `null` si no se pudo leer la cola, y el código sigue en 200 |
 | `relay.pendientes` | Webhooks de Meta que todavía no llegan al CRM |
 | `relay.masViejoSegundos` | Cuántos segundos lleva esperando el más viejo. `null` si no hay pendientes |
 | `relay.ultimoErrorEn` | La última vez que falló una entrega al CRM (ISO 8601, UTC). No se borra cuando la cola se vacía |
