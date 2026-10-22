@@ -1,4 +1,4 @@
-"""Entrada del modo cloud: el CRM le DESPACHA la conversación a Nea.
+"""Entrada normalizada: el CRM le DESPACHA la conversación a Nea.
 
 Es la inversión del camino de siempre. Con un Vocero de un solo negocio, Meta
 manda el webhook a Nea y Nea lo relaya al CRM. Con un Vocero multitenant el
@@ -14,8 +14,9 @@ Eso cambia tres cosas, y las tres para bien:
 - **No se parsea a Meta.** Llega un evento normalizado, igual para WhatsApp que
   para Instagram que para lo que venga después.
 
-Esta ruta solo existe con `VOCERO_MODE=cloud`. Sin esa bandera, Nea no la monta
-y su webhook de Meta sigue siendo el de siempre.
+Esta ruta existe con `VOCERO_MODE=cloud` o `VOCERO_MODE=dispatch`. El segundo
+modo conserva `/api/bot/*` y usa `CRM_BOT_API_KEY` también para verificar la
+firma, por lo que sirve a una instalación única y multicanal.
 """
 from __future__ import annotations
 
@@ -103,7 +104,7 @@ async def recibir(request: Request) -> Any:
     if not firma_valida(
         body,
         request.headers.get("x-vocero-signature"),
-        ctx.settings.crm_brain_secret,
+        ctx.settings.secreto_despacho,
     ):
         logger.warning("despacho con firma inválida o ausente — 401")
         return JSONResponse({"error": "firma inválida"}, status_code=401)

@@ -201,11 +201,15 @@ class Settings(BaseSettings):
     # suma se corta a los 10 min. Vacío = no se reintenta.
     turn_retry_delays: str = "15,45,120,300"
 
-    # ── Modo cloud (Vocero multitenant) ───────────────────────────────
+    # ── Modos de despacho de Vocero ───────────────────────────────────
     #
     # Vacío = comportamiento de SIEMPRE: Meta manda el webhook a Nea, Nea lo
     # relaya al CRM y habla con `/api/bot/*`. Ninguna instalación existente
     # cambia por añadir esto, y ninguna variable nueva es obligatoria.
+    #
+    # `dispatch` = una instancia de Vocero/Nagai recibe cualquier canal, lo
+    # normaliza y despacha firmado con CRM_BOT_API_KEY. Nea responde por
+    # `/api/bot/*`, igual que en el modo histórico.
     #
     # `cloud` = Nea vive detrás de un Vocero multitenant: el CRM ya recibió el
     # mensaje y se lo DESPACHA a Nea firmado, y Nea contesta por
@@ -273,6 +277,21 @@ class Settings(BaseSettings):
         modo que pidió.
         """
         return self.vocero_mode.strip().lower() == "cloud"
+
+    @property
+    def dispatch_mode(self) -> bool:
+        """¿Una instancia única entrega eventos normalizados a Nea?"""
+        return self.vocero_mode.strip().lower() == "dispatch"
+
+    @property
+    def recibe_despachos(self) -> bool:
+        """Cloud y dispatch comparten entrada durable, sin webhook ni relay."""
+        return self.cloud_mode or self.dispatch_mode
+
+    @property
+    def secreto_despacho(self) -> str:
+        """Credencial que firma el cuerpo según el contrato del CRM emisor."""
+        return self.crm_brain_secret if self.cloud_mode else self.crm_bot_api_key
 
     @staticmethod
     def _identities(csv: str) -> frozenset[str]:

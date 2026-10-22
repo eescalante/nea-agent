@@ -128,7 +128,11 @@ def _identidad(settings: Settings | None) -> dict[str, Any]:
         cuerpo["mode"] = (
             "multiorg"
             if settings.multi_org
-            else "cloud" if settings.cloud_mode else "estándar"
+            else "cloud"
+            if settings.cloud_mode
+            else "dispatch"
+            if settings.dispatch_mode
+            else "estándar"
         )
     return cuerpo
 
@@ -266,12 +270,12 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
             asyncio.create_task(followup_worker.run(), name="followup-worker"),
             asyncio.create_task(sender_worker.run(), name="sender-worker"),
         ]
-        if c.settings.cloud_mode:
+        if c.settings.recibe_despachos:
             workers.append(asyncio.create_task(run_dispatch_worker(c), name="dispatch-worker"))
-        # El relay reenvía al CRM el payload crudo de Meta. En cloud el CRM YA
-        # tiene el mensaje —él lo recibió y él nos lo despachó—, así que
+        # El relay reenvía al CRM el payload crudo de Meta. En los modos de
+        # despacho el CRM YA tiene el mensaje —él lo recibió y nos lo entregó—, así que
         # reenviárselo sería duplicarlo en la bandeja del cliente.
-        if not c.settings.cloud_mode:
+        if not c.settings.recibe_despachos:
             workers.insert(
                 0, asyncio.create_task(relay_worker.run(), name="relay-worker")
             )
@@ -280,9 +284,13 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
             (
                 "cloud multi-organización"
                 if c.settings.multi_org
-                else "cloud" if c.settings.cloud_mode else "meta"
+                else "cloud"
+                if c.settings.cloud_mode
+                else "dispatch"
+                if c.settings.dispatch_mode
+                else "meta"
             ),
-            "" if c.settings.cloud_mode else "relay + ",
+            "" if c.settings.recibe_despachos else "relay + ",
         )
         try:
             yield
@@ -304,9 +312,9 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     app.state.ctx = ctx
     if ctx is not None:
         _wire_coalescer(ctx)
-    # La entrada del despacho solo existe en cloud. Montarla siempre dejaría
+    # La entrada del despacho solo existe en los modos que la solicitan. Montarla siempre dejaría
     # una ruta pública de más en cada instalación que no la usa.
-    if (ctx.settings if ctx is not None else Settings()).cloud_mode:
+    if (ctx.settings if ctx is not None else Settings()).recibe_despachos:
         app.include_router(dispatch_router)
     else:
         app.include_router(webhook_router)
@@ -330,10 +338,10 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                 {"status": "degraded", "db": "error", **identidad}, status_code=503
             )
         cuerpo: dict[str, Any] = {"status": "ok", "db": "ok", **identidad}
-        # El relay solo corre en el modo de siempre (en cloud el CRM ya tiene
+        # El relay solo corre en el modo de siempre (con despacho el CRM ya tiene
         # el mensaje): ahí, ¿cuántos entrantes esperan llegar al CRM, desde
         # cuándo, y cuándo falló la última entrega?
-        if not c.settings.cloud_mode:
+        if not c.settings.recibe_despachos:
             cuerpo["relay"] = await _estado_del_relay(c)
         return cuerpo
 
