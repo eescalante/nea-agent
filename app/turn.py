@@ -568,11 +568,11 @@ async def run_turn(
     )
 
     # Señal de vida: leído + "escribiendo…" mientras Nea piensa (007).
-    # Best-effort absoluto: un fallo aquí jamás afecta el turno.
-    try:
-        await ctx.crm.post_typing(str(crm_conv_id))
-    except Exception as exc:
-        logger.debug("typing de %s falló (%s) — sigo", identity, exc)
+    # Best-effort absoluto: un fallo aquí jamás afecta el turno. Fork Quasar: va
+    # EN SEGUNDO PLANO. El turno no depende de su resultado, y con Zernio el CRM
+    # hace una llamada externa antes de contestar: esperarla le sumaba ese tiempo
+    # a cada respuesta sin ganar nada.
+    _en_segundo_plano(_typing_best_effort(ctx, str(crm_conv_id), identity))
 
     # --- Contenido del turno: texto + multimedia procesada (spec 002) -----
     parts: list[str] = []
@@ -601,10 +601,15 @@ async def run_turn(
     # ¿El CRM agenda HOY? La respuesta caduca (app/agenda.py): si venció, este
     # turno la vuelve a pedir, con timeout corto. Así encender AGENDA en el
     # CRM llega sin reiniciar Nea, y un 404 de la bandera no apaga para siempre.
-    ctx.agenda_enabled = await agenda_vigente(ctx)
+    # Fork Quasar: la sonda de la agenda y el perfil no dependen uno del otro, así
+    # que se piden a la vez (cada uno es una llamada al CRM; casi siempre salen
+    # de su caché y esto no cambia nada, pero cuando ambos vencen esperan lo del
+    # más lento en vez de la suma).
+    ctx.agenda_enabled, profile = await asyncio.gather(
+        agenda_vigente(ctx), resolve_profile(ctx)
+    )
     referral = next((m.referral_headline for m in inbound if m.referral_headline), None)
     offered = await ctx.store.get_offered_slots(conv.id)
-    profile = await resolve_profile(ctx)
     system = build_system_prompt(
         profile=profile,
         context=context,
@@ -825,6 +830,26 @@ async def _olvidar_si_es_otra(
     org_id, org_slug = ctx.organizacion or ("", "")
     await ctx.store.forget_conversation(org_id, identity, anterior)
     return await ctx.store.get_or_create_conversation(identity, org_id, org_slug)
+
+
+# Referencias a las tareas de fondo: el bucle de eventos solo guarda referencias
+# débiles, y una tarea sin dueño puede desaparecer a mitad de camino.
+_TAREAS_DE_FONDO: set[asyncio.Task[Any]] = set()
+
+
+def _en_segundo_plano(corrutina: Any) -> None:
+    """Lanza `corrutina` sin esperarla. Quien la pasa se encarga de no lanzar."""
+    tarea = asyncio.create_task(corrutina)
+    _TAREAS_DE_FONDO.add(tarea)
+    tarea.add_done_callback(_TAREAS_DE_FONDO.discard)
+
+
+async def _typing_best_effort(ctx: AppContext, crm_conv_id: str, identity: str) -> None:
+    """«Escribiendo…» + leído. Cualquier fallo se traga: nunca afecta al turno."""
+    try:
+        await ctx.crm.post_typing(crm_conv_id)
+    except Exception as exc:
+        logger.debug("typing de %s falló (%s) — sigo", identity, exc)
 
 
 async def _run_reset(ctx: AppContext, conv: Any, identity: str) -> None:
