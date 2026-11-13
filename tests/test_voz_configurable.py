@@ -65,7 +65,7 @@ def test_con_tono_del_negocio_el_chasis_no_dice_tu_ni_emojis_para_no_competir(mo
     _limpio(monkeypatch)
     perfil = BusinessProfile(agent_name="Quasar", tone="Profesional, con voseo rioplatense. Sin emojis.")
     chasis = _chassis(perfil)
-    assert 'de "tú"' not in chasis  # el «tú» del chasis ya no pelea con el voseo del perfil
+    assert "Sin tuteo ni voseo" not in chasis  # el trato del chasis ya no pelea con el voseo del perfil
     assert "Emojis: pocos" not in chasis
     assert "los define el tono del negocio" in chasis
     # y el tono del negocio es el único texto sobre esos temas (va en el bloque del perfil).
@@ -75,13 +75,13 @@ def test_con_tono_del_negocio_el_chasis_no_dice_tu_ni_emojis_para_no_competir(mo
 def test_sin_tono_del_negocio_entra_el_estilo_por_defecto(monkeypatch):
     _limpio(monkeypatch)
     chasis = _chassis(BusinessProfile(agent_name="Quasar"))
-    assert 'de "tú"' in chasis and "Emojis: pocos" in chasis
+    assert "Sin tuteo ni voseo" in chasis and "Emojis: pocos" in chasis
     assert "los define el tono del negocio" not in chasis
 
 
 def test_un_tono_solo_con_espacios_cuenta_como_sin_tono(monkeypatch):
     _limpio(monkeypatch)
-    assert 'de "tú"' in _chassis(BusinessProfile(agent_name="Quasar", tone="   "))
+    assert "Sin tuteo ni voseo" in _chassis(BusinessProfile(agent_name="Quasar", tone="   "))
 
 
 def test_las_universales_valen_con_y_sin_tono(monkeypatch):
@@ -98,3 +98,12 @@ def test_el_archivo_o_la_variable_siguen_reemplazando_todo_el_bloque_aunque_haya
     monkeypatch.setenv("AGENT_VOICE_RULES", "- Solo esto.")
     chasis = _chassis(BusinessProfile(agent_name="Q", tone="Formal."))
     assert "- Solo esto." in chasis and "NATURAL:" not in chasis
+
+
+def test_el_trato_por_defecto_no_es_tu_ni_voseo_y_el_ejemplo_de_confirmar_cita_tampoco_tutea(monkeypatch):
+    _limpio(monkeypatch)
+    chasis = _chassis(BusinessProfile(agent_name="Quasar"))
+    assert "Sin tuteo ni voseo" in chasis and "usted" in chasis and 'de "tú"' not in chasis
+    assert "te aparto" not in chasis  # un ejemplo con tuteo empujaría al modelo a tutear
+    # Con tono del negocio, el trato lo decide el tono (no se menciona).
+    assert "Sin tuteo ni voseo" not in _chassis(BusinessProfile(agent_name="Q", tone="Voseo cordial."))
