@@ -238,9 +238,9 @@ VOICE_SCHEMA = {
             "expresamente que le contestes por audio o por nota de voz. Nunca la "
             "ofrezcas ni la mandes por tu cuenta. `text` es lo que dirá la voz: "
             "habla natural y breve, en el mismo tono que por escrito, sin "
-            "emojis, listas, enlaces ni formato (máximo ~600 caracteres). Si el "
-            "cliente pidió algo largo, resume lo esencial y ofrece escribirle "
-            "el detalle."
+            "emojis, listas, enlaces ni formato. Apunta a 350-450 caracteres "
+            "(unos 25 segundos) y NUNCA pases de 600: si el cliente pidió algo "
+            "largo, resume lo esencial y ofrece escribirle el detalle."
         ),
         "parameters": {
             "type": "object",
@@ -460,6 +460,9 @@ class ToolRuntime:
         self.voice_sent: str | None = None
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        # Qué herramienta llama el modelo en cada ronda del turno: sin esto, ante un turno
+        # lento no hay forma de saber cuántas rondas hubo ni por qué.
+        logger.info("tools: ronda → %s (%s)", name, ", ".join(sorted(args)) or "sin argumentos")
         try:
             if name == "coordination_consent" and getattr(self._ctx.crm, "supports_coordination", False):
                 if not isinstance(args.get("consent"), bool):
