@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from app.crm import CrmError
+from app.crm import CrmError, CrmUnreachable
 from app.profile import BusinessProfile, profile_from_payload
 from app.tools import ToolRuntime, tool_schemas
 
@@ -14,11 +14,14 @@ def _nombres(schemas):
 
 
 class _Crm:
-    def __init__(self, falla: bool = False):
+    def __init__(self, falla: bool = False, sin_respuesta: bool = False):
+        self._sin_respuesta = sin_respuesta
         self.llamadas: list[tuple[str, str]] = []
         self._falla = falla
 
     async def send_voice(self, conversation_id: str, text: str):
+        if self._sin_respuesta:
+            raise CrmUnreachable("timeout")
         if self._falla:
             raise CrmError("voz devolvió 502: voz_fallo")
         self.llamadas.append((conversation_id, text))
@@ -88,3 +91,19 @@ def test_un_texto_demasiado_largo_se_devuelve_para_que_lo_acorte_y_no_cuenta_com
     assert crm.llamadas == [] and rt.voice_sent is None
     # Puede reintentar con uno corto en el mismo turno.
     assert asyncio.run(rt.execute("send_voice_note", {"text": "corto"}))["ok"] is True
+
+
+def test_si_el_crm_no_contesta_a_tiempo_no_se_le_dice_al_cliente_que_no_se_puede():
+    # En producción el CRM tardaba más que el tope y el audio llegaba igual: Nea decía
+    # «no puedo mandar audios» justo antes de que llegara.
+    rt = _runtime(_Crm(sin_respuesta=True))
+    res = asyncio.run(rt.execute("send_voice_note", {"text": "hola"}))
+    assert res["ok"] is True
+    assert "NO afirmes" in res["nota"]
+    assert rt.voice_sent == "hola"
+
+
+def test_el_pedido_de_voz_espera_mas_que_los_demas():
+    from app.crm import VOICE_TIMEOUT_SECONDS
+
+    assert VOICE_TIMEOUT_SECONDS > 15.0

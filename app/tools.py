@@ -22,6 +22,7 @@ from app.crm import (
     AgendaUnavailable,
     CrmConflict,
     CrmError,
+    CrmUnreachable,
     SlotNotOffered,
     SlotTaken,
 )
@@ -515,6 +516,15 @@ class ToolRuntime:
             }
         try:
             await self._ctx.crm.send_voice(self._crm_conv_id, text)
+        except CrmUnreachable as exc:
+            # Sin respuesta a tiempo: el CRM pudo haber mandado el audio igual. No se le
+            # dice al cliente que no se puede, ni se repite lo mismo por texto.
+            logger.warning("tools: send_voice_note sin respuesta: %s", exc)
+            self.voice_sent = text
+            return {
+                "ok": True,
+                "nota": "No pude confirmar el envío del audio; es probable que ya le haya llegado. NO afirmes que no puedes mandar audios ni repitas el contenido por texto: como mucho pregunta si lo recibió.",
+            }
         except CrmError as exc:
             logger.warning("tools: send_voice_note falló: %s", exc)
             return {

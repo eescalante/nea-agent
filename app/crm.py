@@ -179,6 +179,10 @@ def canonical_handoff_reason(reason: str | None) -> str:
     return "modelo"
 
 
+# Fork Quasar: cuánto espera Nea a que el CRM sintetice y envíe una nota de voz.
+VOICE_TIMEOUT_SECONDS = 75.0
+
+
 class CrmClient:
     media_path = "/api/bot/media/"
     def __init__(
@@ -245,10 +249,14 @@ class CrmClient:
         `limite_de_audios`, `voz_fallo`, `window_closed`, `ai_paused`) para que
         el modelo sepa por qué y conteste por texto.
         """
+        # Sintetizar la voz, convertirla y enviarla tarda bastante más que el resto
+        # (en producción, ~30 s): con el tope de 15 s de los demás pedidos, Nea creía
+        # que había fallado mientras el CRM igual terminaba de mandar el audio.
         resp = await self._request(
             "POST",
             "/api/bot/voz",
             json={"conversationId": conversation_id, "text": text},
+            timeout=VOICE_TIMEOUT_SECONDS,
         )
         if resp.status_code != 200:
             raise CrmError(f"voz devolvió {resp.status_code}: {_conflict_code(resp)}")
