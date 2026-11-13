@@ -224,7 +224,7 @@ AGENDA_V2_SCHEMAS = [
 ]
 
 # Fork Quasar: tope de caracteres de una nota de voz (el mismo que valida el CRM).
-VOICE_MAX_CHARS = 600
+VOICE_MAX_CHARS = 800
 
 # Fork Quasar: responder con una nota de voz. Solo se le muestra al modelo si el
 # CRM la habilitó (`BusinessProfile.voice`), y la descripción la acota a lo que
@@ -238,8 +238,8 @@ VOICE_SCHEMA = {
             "expresamente que le contestes por audio o por nota de voz. Nunca la "
             "ofrezcas ni la mandes por tu cuenta. `text` es lo que dirá la voz: "
             "habla natural y breve, en el mismo tono que por escrito, sin "
-            "emojis, listas, enlaces ni formato. Apunta a 350-450 caracteres "
-            "(unos 25 segundos) y NUNCA pases de 600: si el cliente pidió algo "
+            "emojis, listas, enlaces ni formato. Apunta a unos 500 caracteres "
+            "(~30 segundos) y NUNCA pases de 800: si el cliente pidió algo "
             "largo, resume lo esencial y ofrece escribirle el detalle."
         ),
         "parameters": {
@@ -538,7 +538,7 @@ class ToolRuntime:
         self.voice_sent = text
         return {
             "ok": True,
-            "nota": "El audio ya se envió. NO repitas su contenido por texto: como mucho cierra con una frase corta (o no escribas nada).",
+            "nota": "El audio ya se envió. No hace falta escribir nada más.",
         }
 
     async def _update_ficha(self, args: dict[str, Any]) -> dict[str, Any]:

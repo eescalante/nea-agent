@@ -1090,6 +1090,10 @@ async def _tool_loop(
                     "content": json.dumps(result, ensure_ascii=False, default=str),
                 }
             )
+        if runtime.voice_sent is not None:
+            # Fork Quasar: el audio ya es la respuesta. Como si una persona contestara
+            # por voz y listo: sin otra ronda del modelo ni un texto de acompañamiento.
+            return None
     logger.warning("turno: demasiadas rondas de herramientas — corto sin texto")
     return None
 

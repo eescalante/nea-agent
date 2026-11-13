@@ -86,8 +86,8 @@ def test_si_el_crm_falla_el_modelo_recibe_que_conteste_por_texto():
 def test_un_texto_demasiado_largo_se_devuelve_para_que_lo_acorte_y_no_cuenta_como_enviado():
     crm = _Crm()
     rt = _runtime(crm)
-    res = asyncio.run(rt.execute("send_voice_note", {"text": "x" * 601}))
-    assert res["ok"] is False and "600" in res["detalle"]
+    res = asyncio.run(rt.execute("send_voice_note", {"text": "x" * 801}))
+    assert res["ok"] is False and "800" in res["detalle"]
     assert crm.llamadas == [] and rt.voice_sent is None
     # Puede reintentar con uno corto en el mismo turno.
     assert asyncio.run(rt.execute("send_voice_note", {"text": "corto"}))["ok"] is True
@@ -107,3 +107,50 @@ def test_el_pedido_de_voz_espera_mas_que_los_demas():
     from app.crm import VOICE_TIMEOUT_SECONDS
 
     assert VOICE_TIMEOUT_SECONDS > 15.0
+
+
+def test_despues_del_audio_el_turno_termina_sin_otra_ronda_ni_texto():
+    from app.turn import _tool_loop
+
+    class _Llm:
+        def __init__(self):
+            self.rondas = 0
+
+        async def complete(self, messages, tools=None):
+            self.rondas += 1
+            return SimpleNamespace(
+                content=None,
+                tool_calls=[SimpleNamespace(id="t1", name="send_voice_note", arguments={"text": "Hola, te cuento."})],
+            )
+
+    crm = _Crm()
+    llm = _Llm()
+    ctx = SimpleNamespace(crm=crm, llm=llm, agenda_enabled=False)
+    rt = ToolRuntime(ctx, None, "cv_1", profile=BusinessProfile(voice=True))
+    texto = asyncio.run(_tool_loop(ctx, [{"role": "user", "content": "mandame un audio"}], rt))
+    assert texto is None  # nada que mandar por texto
+    assert llm.rondas == 1  # no hay una tercera llamada al modelo
+    assert crm.llamadas == [("cv_1", "Hola, te cuento.")]
+
+
+def test_si_el_audio_falla_el_turno_sigue_y_contesta_por_texto():
+    from app.turn import _tool_loop
+
+    class _Llm:
+        def __init__(self):
+            self.rondas = 0
+
+        async def complete(self, messages, tools=None):
+            self.rondas += 1
+            if self.rondas == 1:
+                return SimpleNamespace(
+                    content=None,
+                    tool_calls=[SimpleNamespace(id="t1", name="send_voice_note", arguments={"text": "hola"})],
+                )
+            return SimpleNamespace(content="Te lo cuento por texto.", tool_calls=[])
+
+    ctx = SimpleNamespace(crm=_Crm(falla=True), llm=_Llm(), agenda_enabled=False)
+    rt = ToolRuntime(ctx, None, "cv_1", profile=BusinessProfile(voice=True))
+    texto = asyncio.run(_tool_loop(ctx, [{"role": "user", "content": "mandame un audio"}], rt))
+    assert texto == "Te lo cuento por texto."
+    assert ctx.llm.rondas == 2
