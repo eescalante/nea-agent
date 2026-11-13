@@ -12,6 +12,8 @@ comportamiento end-to-end (ver README, "Definición de Hecho").
 from __future__ import annotations
 
 import json
+import logging
+import os
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -19,7 +21,52 @@ import json
 from app.profile import BusinessProfile
 from app.state import Conversation, OfferedSlot
 
+logger = logging.getLogger("nea.prompt")
+
 DEFAULT_TZ = ZoneInfo("America/Mexico_City")
+
+
+# --- Voz y estilo: configurables sin recompilar ---------------------------------------
+# El bloque «IDENTIDAD Y VOZ» es contenido, no código: cómo habla el agente cambia por
+# negocio y se ajusta seguido. Se puede reemplazar entero sin tocar la imagen:
+#   AGENT_VOICE_RULES_FILE=/ruta/voz.md   → se relee cuando el archivo cambia (sin reiniciar)
+#   AGENT_VOICE_RULES="- regla 1\n- regla 2"  → por entorno (un reinicio, no una recompilación)
+# Gana el archivo, luego la variable, luego el texto de abajo. Solo reemplaza el ESTILO: los
+# NUNCA, el protocolo de herramientas y el escalado siguen siendo del chasis.
+VOZ_POR_DEFECTO = """- Eres un agente de IA y lo asumes con naturalidad. Nunca finges ser humano. Si preguntan si eres bot, lo confirmas sin disculparte y sigues ayudando.
+- Español neutro de negocios, de "tú", frases cortas, cero corporativo. Si el perfil del negocio define un tono, ese tono manda.
+- Emojis: pocos y con intención. Uno en el saludo está bien y uno suelto de vez en cuando donde sume calidez — jamás muros de emojis ni uno en cada frase.
+- Seguro, no necesitado. Respetas el tiempo de la persona: vas al grano.
+- UNA pregunta por mensaje, máximo. Espejas el registro del lead: si escribe corto, respondes corto. Mensajes cortos de WhatsApp (2-4 líneas).
+- NATURAL: escribe como hablaría una persona en una conversación real. Si una frase no la diría alguien en voz alta, no la escribas. Nada de fórmulas de oficina o de radio: "recibido", "bien recibido", "queda registrado", "tomo nota", "perfecto, procedo".
+- CONCISIÓN: reacciona en media frase, con naturalidad ("Gracias por escribirnos", "Claro", "Entiendo"), y pregunta lo siguiente. NO des mini-clases ni sermones — explica a fondo SOLO si te lo piden. Nunca repitas la misma frase o estructura de un mensaje anterior: si ya lo dijiste, di algo nuevo o pregunta directo."""
+
+_archivos_de_voz: dict[str, tuple[float, str]] = {}
+_voz_avisada: set[str] = set()
+
+
+def reglas_de_voz() -> str:
+    """Las reglas de voz vigentes: archivo, variable de entorno o las de siempre."""
+    ruta = os.environ.get("AGENT_VOICE_RULES_FILE", "").strip()
+    if ruta:
+        try:
+            mtime = os.stat(ruta).st_mtime
+            guardado = _archivos_de_voz.get(ruta)
+            if guardado is None or guardado[0] != mtime:
+                with open(ruta, encoding="utf-8") as f:
+                    guardado = (mtime, f.read().strip())
+                _archivos_de_voz[ruta] = guardado
+                logger.info("reglas de voz: leídas de %s (%d caracteres)", ruta, len(guardado[1]))
+            if guardado[1]:
+                return guardado[1]
+        except OSError as exc:
+            if ruta not in _voz_avisada:
+                _voz_avisada.add(ruta)
+                logger.warning("reglas de voz: no pude leer %s (%s) — uso las de siempre", ruta, exc)
+    env = os.environ.get("AGENT_VOICE_RULES", "").strip()
+    if env:
+        return env.replace("\\n", "\n")
+    return VOZ_POR_DEFECTO
 
 
 def _chassis(profile: BusinessProfile) -> str:
@@ -27,13 +74,7 @@ def _chassis(profile: BusinessProfile) -> str:
     text = f"""Eres {name}, el agente de IA de WhatsApp de este negocio. Atiendes a personas que escriben al número del negocio. Tu trabajo: entender qué necesita cada persona, calificarla según las instrucciones del negocio y AGENDAR una cita con el equipo cuando corresponda — o darle una salida digna cuando no.
 
 IDENTIDAD Y VOZ:
-- Eres un agente de IA y lo asumes con naturalidad. Nunca finges ser humano. Si preguntan si eres bot, lo confirmas sin disculparte y sigues ayudando.
-- Español neutro de negocios, de "tú", frases cortas, cero corporativo. Si el perfil del negocio define un tono, ese tono manda.
-- Emojis: pocos y con intención. Uno en el saludo está bien y uno suelto de vez en cuando donde sume calidez — jamás muros de emojis ni uno en cada frase.
-- Seguro, no necesitado. Respetas el tiempo de la persona: vas al grano.
-- UNA pregunta por mensaje, máximo. Espejas el registro del lead: si escribe corto, respondes corto. Mensajes cortos de WhatsApp (2-4 líneas).
-- NATURAL: escribe como hablaría una persona en una conversación real. Si una frase no la diría alguien en voz alta, no la escribas. Nada de fórmulas de oficina o de radio: "recibido", "bien recibido", "queda registrado", "tomo nota", "perfecto, procedo".
-- CONCISIÓN: reacciona en media frase, con naturalidad ("Gracias por escribirnos", "Claro", "Entiendo"), y pregunta lo siguiente. NO des mini-clases ni sermones — explica a fondo SOLO si te lo piden. Nunca repitas la misma frase o estructura de un mensaje anterior: si ya lo dijiste, di algo nuevo o pregunta directo.
+{reglas_de_voz()}
 
 CONVERSACIÓN:
 1) Primer mensaje: saluda transparente + un gancho de valor + UNA pregunta abierta. Nada de formulario. Si el perfil define un saludo sugerido, úsalo como base. Si sabes de qué anuncio vino la persona, menciónalo.
