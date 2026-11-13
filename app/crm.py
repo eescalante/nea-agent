@@ -238,6 +238,23 @@ class CrmClient:
         data: dict[str, Any] = resp.json()
         return data
 
+    async def send_voice(self, conversation_id: str, text: str) -> dict[str, Any]:
+        """Fork Quasar: el CRM sintetiza `text` y lo manda como nota de voz.
+
+        Los errores traen el código del CRM (`voz_apagada`, `canal_sin_audio`,
+        `limite_de_audios`, `voz_fallo`, `window_closed`, `ai_paused`) para que
+        el modelo sepa por qué y conteste por texto.
+        """
+        resp = await self._request(
+            "POST",
+            "/api/bot/voz",
+            json={"conversationId": conversation_id, "text": text},
+        )
+        if resp.status_code != 200:
+            raise CrmError(f"voz devolvió {resp.status_code}: {_conflict_code(resp)}")
+        data: dict[str, Any] = resp.json()
+        return data
+
     async def put_ficha(
         self, conversation_id: str, ficha: dict[str, Any]
     ) -> dict[str, Any]:

@@ -717,6 +717,11 @@ async def run_turn(
     # historial es lo ya convertido para que el modelo no aprenda de vuelta
     # el formato que el lead ve roto (app/formato.py).
     sent = False
+    if runtime.voice_sent is not None:
+        # Fork Quasar: el audio ya salió; queda en el historial para que el modelo
+        # sepa qué dijo y no lo repita (el CRM lo guarda como nota de voz).
+        await ctx.store.add_message(conv.id, "assistant", f"[Nota de voz enviada] {runtime.voice_sent}")
+        sent = True
     if final_text and final_text.strip():
         final_text = a_whatsapp(runtime.finalize_reply(final_text.strip()))
     if final_text and final_text.strip():
@@ -1054,7 +1059,7 @@ async def _tool_loop(
     """
     for _ in range(MAX_TOOL_ROUNDS):
         reply = await ctx.llm.complete(
-            messages, tools=tool_schemas(ctx.agenda_enabled, bool(getattr(ctx.crm, "supports_agenda_v2", False)), bool(getattr(ctx.crm, "supports_coordination", False)))
+            messages, tools=tool_schemas(ctx.agenda_enabled, bool(getattr(ctx.crm, "supports_agenda_v2", False)), bool(getattr(ctx.crm, "supports_coordination", False)), runtime.voz_habilitada)
         )
         if not reply.tool_calls:
             return reply.content  # turno de puro texto

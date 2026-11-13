@@ -222,11 +222,45 @@ AGENDA_V2_SCHEMAS = [
     {"type": "function", "function": {"name": "cancel_session", "description": "Cancela la cita seleccionada SOLO después de confirmación explícita del cliente. Usa el selectionToken devuelto por list_bookings.", "parameters": {"type": "object", "properties": {"selection_token": {"type": "string"}, "confirmation": {"type": "boolean"}}, "required": ["selection_token", "confirmation"]}}},
 ]
 
+# Fork Quasar: tope de caracteres de una nota de voz (el mismo que valida el CRM).
+VOICE_MAX_CHARS = 600
+
+# Fork Quasar: responder con una nota de voz. Solo se le muestra al modelo si el
+# CRM la habilitó (`BusinessProfile.voice`), y la descripción la acota a lo que
+# el cliente pide EXPRESAMENTE: un audio no se ofrece ni se manda por iniciativa.
+VOICE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "send_voice_note",
+        "description": (
+            "Responde con una nota de voz. Úsala SOLO cuando el cliente pida "
+            "expresamente que le contestes por audio o por nota de voz. Nunca la "
+            "ofrezcas ni la mandes por tu cuenta. `text` es lo que dirá la voz: "
+            "habla natural y breve, en el mismo tono que por escrito, sin "
+            "emojis, listas, enlaces ni formato (máximo ~600 caracteres). Si el "
+            "cliente pidió algo largo, resume lo esencial y ofrece escribirle "
+            "el detalle."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Lo que dirá la nota de voz."}
+            },
+            "required": ["text"],
+        },
+    },
+}
+
 # Herramientas que solo tienen sentido si el CRM agenda.
 AGENDA_TOOLS = frozenset({"propose_slots", "book_session", "reschedule_session"})
 
 
-def tool_schemas(agenda_enabled: bool = True, agenda_v2: bool = False, coordination: bool = False) -> list[dict[str, Any]]:
+def tool_schemas(agenda_enabled: bool = True, agenda_v2: bool = False, coordination: bool = False, voz: bool = False) -> list[dict[str, Any]]:
+    base = _tool_schemas_base(agenda_enabled, agenda_v2, coordination)
+    return [*base, VOICE_SCHEMA] if voz else base
+
+
+def _tool_schemas_base(agenda_enabled: bool = True, agenda_v2: bool = False, coordination: bool = False) -> list[dict[str, Any]]:
     """El catálogo que se le ofrece al modelo en ESTE turno.
 
     Contra un CRM sin agenda no se le enseñan las herramientas de agendar: si
@@ -421,6 +455,8 @@ class ToolRuntime:
         self.booking_confirmation: dict[str, Any] | None = None
         self.routed_out = False
         self.proposed = False
+        # Fork Quasar: el texto de la nota de voz que se mandó en este turno.
+        self.voice_sent: str | None = None
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -442,6 +478,8 @@ class ToolRuntime:
                 return await self._book_session(args)
             if name == "reschedule_session":
                 return await self._reschedule_session(args)
+            if name == "send_voice_note":
+                return await self._send_voice_note(args)
             if name == "route_out":
                 return await self._route_out()
             if name == "handoff":
@@ -455,6 +493,40 @@ class ToolRuntime:
                 "error": "crm_error",
                 "detalle": "no pude completar la acción; continúa la conversación o haz handoff",
             }
+
+    @property
+    def voz_habilitada(self) -> bool:
+        return bool(getattr(self._profile, "voice", False))
+
+    async def _send_voice_note(self, args: dict[str, Any]) -> dict[str, Any]:
+        if not self.voz_habilitada:
+            return {"ok": False, "error": "herramienta no disponible"}
+        text = str(args.get("text") or "").strip()
+        if not text:
+            return {"ok": False, "error": "falta el texto del audio"}
+        if self.voice_sent is not None:
+            return {"ok": False, "error": "ya mandaste un audio en este turno; responde por texto"}
+        if len(text) > VOICE_MAX_CHARS:
+            # No cuenta como audio mandado: el modelo reescribe más corto y reintenta.
+            return {
+                "ok": False,
+                "error": "texto demasiado largo",
+                "detalle": f"El audio admite hasta {VOICE_MAX_CHARS} caracteres (el tuyo tiene {len(text)}). Reescríbelo más breve —lo esencial, hablado— y llama de nuevo; el detalle lo puedes ofrecer por escrito.",
+            }
+        try:
+            await self._ctx.crm.send_voice(self._crm_conv_id, text)
+        except CrmError as exc:
+            logger.warning("tools: send_voice_note falló: %s", exc)
+            return {
+                "ok": False,
+                "error": "no se pudo mandar el audio",
+                "detalle": "Dile al cliente, sin dar explicaciones técnicas, que por ahora no puedes mandar audios y respóndele por texto.",
+            }
+        self.voice_sent = text
+        return {
+            "ok": True,
+            "nota": "El audio ya se envió. NO repitas su contenido por texto: como mucho cierra con una frase corta (o no escribas nada).",
+        }
 
     async def _update_ficha(self, args: dict[str, Any]) -> dict[str, Any]:
         # Tolera el drift del LLM: manda lo que haya, el CRM normaliza flojo.

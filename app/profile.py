@@ -48,6 +48,9 @@ class BusinessProfile:
     greeting: str | None = None
     kb_text: str | None = None
     resources: list[dict[str, str]] = field(default_factory=list)
+    # Fork Quasar: el CRM habilita mandar notas de voz (interruptor de Ajustes → IA
+    # y herramienta del perfil). Sin esto la herramienta ni se le muestra al modelo.
+    voice: bool = False
 
     @property
     def has_knowledge(self) -> bool:
@@ -76,6 +79,7 @@ def profile_from_payload(payload: dict[str, Any], default_name: str) -> Business
         greeting=prof.get("greeting") or None,
         kb_text=kb_text,
         resources=resources,
+        voice="voz" in (prof.get("tools") or []),
     )
 
 
