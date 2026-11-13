@@ -229,6 +229,19 @@ class CrmClient:
         data: dict[str, Any] = resp.json()
         return data
 
+    async def post_cronometro(self, conversation_id: str, pasos: dict[str, int]) -> None:
+        """Fork Quasar: lo que tardó cada paso del turno (ms), para Ajustes → Avanzado del CRM.
+
+        Best-effort: el CRM lo anota junto con lo que él mide (ventana, entrega, respuesta).
+        """
+        resp = await self._request(
+            "POST",
+            "/api/bot/cronometro",
+            json={"conversationId": conversation_id, "pasos": pasos},
+        )
+        if resp.status_code != 200:
+            raise CrmError(f"cronometro devolvió {resp.status_code}")
+
     async def send_message(self, conversation_id: str, text: str) -> dict[str, Any]:
         resp = await self._request(
             "POST",

@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -460,6 +461,43 @@ async def cancelar_pendientes(ctx: AppContext) -> None:
         )
 
 
+class _Cron:
+    """Cuánto tarda cada paso del turno (fork Quasar).
+
+    Un turno lento no dice dónde se va el tiempo: el CRM ve sus llamadas, y el modelo,
+    el suyo, pero lo que pasa entremedio es de Nea. Una línea por turno, con lo que
+    tardó cada paso desde el anterior, lo deja a la vista sin cambiar nada del turno.
+    """
+
+    def __init__(self) -> None:
+        self._t = time.monotonic()
+        self._inicio = self._t
+        self._pasos: list[tuple[str, float]] = []
+
+    def marca(self, nombre: str) -> None:
+        ahora = time.monotonic()
+        self._pasos.append((nombre, ahora - self._t))
+        self._t = ahora
+
+    def linea(self) -> str:
+        pasos = " · ".join(f"{n} {int(d * 1000)} ms" for n, d in self._pasos)
+        return f"{pasos} · total {int((time.monotonic() - self._inicio) * 1000)} ms"
+
+    def pasos(self) -> dict[str, int]:
+        """`{"conv": 28, "ctx": 422, …}` en ms — lo que se le manda al CRM."""
+        return {n: int(d * 1000) for n, d in self._pasos}
+
+
+async def _cronometro_best_effort(ctx: AppContext, crm_conv_id: str, pasos: dict[str, int]) -> None:
+    enviar = getattr(ctx.crm, "post_cronometro", None)
+    if not callable(enviar):
+        return
+    try:
+        await enviar(crm_conv_id, pasos)
+    except Exception as exc:  # noqa: BLE001 — un diagnóstico no puede afectar al turno
+        logger.debug("cronómetro: no se pudo avisar al CRM (%s)", exc)
+
+
 async def run_turn(
     ctx: AppContext,
     identity: str,
@@ -468,6 +506,7 @@ async def run_turn(
 ) -> None:
     turno = turno if turno is not None else _Turno()
     settings = ctx.settings
+    cron = _Cron()
 
     # --- Gate 1: allowlist de pruebas (Constitución V) --------------------
     allowed = settings.allowed_identities
@@ -488,6 +527,7 @@ async def run_turn(
     # que leen esa memoria (un cierre sin rumbo viejo callaría el primer
     # mensaje de la conversación nueva).
     conv = await _olvidar_si_es_otra(ctx, conv, turno.crm_conversation_id, identity)
+    cron.marca("conv")
 
     # --- Comando /reset (líneas de prueba) --------------------------------
     # Corre ANTES de los gates de aiEnabled/ventana: un reset también debe
@@ -543,6 +583,7 @@ async def run_turn(
     if context is None:
         logger.warning("turno %s: sin contexto del CRM — silencio", identity)
         return
+    cron.marca("ctx")
     conversation_info = context.get("conversation") or {}
     crm_conv_id = conversation_info.get("id")
     if not crm_conv_id:
@@ -566,6 +607,7 @@ async def run_turn(
         last_inbound_at=utcnow(),
         followup_due_at=None,  # el lead habló: se re-agenda al final del turno
     )
+    cron.marca("guardar_conv")
 
     # Señal de vida: leído + "escribiendo…" mientras Nea piensa (007).
     # Best-effort absoluto: un fallo aquí jamás afecta el turno. Fork Quasar: va
@@ -592,10 +634,12 @@ async def run_turn(
         logger.info("turno %s: nada procesable en la ráfaga — silencio", identity)
         return
 
+    cron.marca("contenido")
     user_text = "\n".join(parts)
     await ctx.store.add_message(
         conv.id, "user", user_text, wa_message_id=inbound[0].wa_message_id
     )
+    cron.marca("guardar_msg")
 
     # --- Armar mensajes para el LLM ---------------------------------------
     # ¿El CRM agenda HOY? La respuesta caduca (app/agenda.py): si venció, este
@@ -608,6 +652,7 @@ async def run_turn(
     ctx.agenda_enabled, profile = await asyncio.gather(
         agenda_vigente(ctx), resolve_profile(ctx)
     )
+    cron.marca("perfil")
     referral = next((m.referral_headline for m in inbound if m.referral_headline), None)
     offered = await ctx.store.get_offered_slots(conv.id)
     system = build_system_prompt(
@@ -625,6 +670,7 @@ async def run_turn(
     recientes = await ctx.store.recent_messages(
         conv.id, max(STALL_LOOKBACK, 2 * settings.stall_max_turns + 2)
     )
+    cron.marca("prompt")
     history = recientes[-settings.history_window :]
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}] + [
         {"role": m.role, "content": m.content} for m in history
@@ -676,6 +722,7 @@ async def run_turn(
     )
     try:
         final_text = await _tool_loop(ctx, messages, runtime)
+        cron.marca("modelo")
     except LlmExhausted as exc:
         logger.error(
             "turno %s: LLM agotó reintentos (%s) — silencio + handoff error",
@@ -728,6 +775,12 @@ async def run_turn(
         sent = await _send(ctx, conv.id, str(crm_conv_id), final_text)
         if sent:
             await ctx.store.add_message(conv.id, "assistant", final_text)
+
+    cron.marca("envio")
+    logger.info("turno %s: cronómetro — %s", identity, cron.linea())
+    # Fork Quasar: el CRM lo anota con lo que él mide y lo muestra en Ajustes → Avanzado.
+    # En segundo plano y best-effort: jamás demora ni tumba un turno.
+    _en_segundo_plano(_cronometro_best_effort(ctx, str(crm_conv_id), cron.pasos()))
 
     # El handoff se ejecuta DESPUÉS de la despedida (si no, el CRM la rechaza
     # con 409 ai_paused).

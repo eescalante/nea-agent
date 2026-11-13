@@ -146,6 +146,7 @@ async def recibir(request: Request) -> Any:
     org = organizacion_del_despacho(payload) if valid else None
     if not valid or (ctx.settings.multi_org and org is None):
         return JSONResponse({"error": "despacho inválido"}, status_code=422)
+    logger.info("despacho %s: recibido de %s", payload.get("dispatchId"), (payload.get("conversation") or {}).get("id"))
     try:
         await ctx.store.enqueue_dispatch(org[0] if org else ctx.settings.crm_organization, payload)
     except Exception:
@@ -231,6 +232,7 @@ async def olvidar(ctx: AppContext, payload: dict[str, Any]) -> None:
 
 async def _procesar(ctx: AppContext, payload: dict[str, Any], *, durable: bool = False) -> None:
     dispatch_id = str(payload.get("dispatchId") or "")
+    logger.info("despacho %s: tomado por el worker", dispatch_id)
     conversation = payload.get("conversation") or {}
     conversation_id = str(conversation.get("id") or "")
 

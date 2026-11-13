@@ -154,3 +154,30 @@ def test_si_el_audio_falla_el_turno_sigue_y_contesta_por_texto():
     texto = asyncio.run(_tool_loop(ctx, [{"role": "user", "content": "mandame un audio"}], rt))
     assert texto == "Te lo cuento por texto."
     assert ctx.llm.rondas == 2
+
+
+def test_el_cronometro_se_le_manda_al_crm_en_una_llamada_aparte():
+    # Fork Quasar: el CRM anota lo que tardó cada paso de Nea junto con lo que él mide.
+    import httpx
+
+    from app.crm import CrmClient
+    from app.turn import _Cron
+
+    visto: dict = {}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        import json
+
+        visto["ruta"] = request.url.path
+        visto["cuerpo"] = json.loads(request.content)
+        return httpx.Response(200, json={"ok": True})
+
+    cliente = CrmClient("http://crm.test", "k", client=httpx.AsyncClient(
+        base_url="http://crm.test", transport=httpx.MockTransport(responder)))
+    cron = _Cron()
+    cron.marca("conv")
+    cron.marca("ctx")
+    asyncio.run(cliente.post_cronometro("cv_1", cron.pasos()))
+    assert visto["ruta"] == "/api/bot/cronometro"
+    assert visto["cuerpo"]["conversationId"] == "cv_1"
+    assert set(visto["cuerpo"]["pasos"]) == {"conv", "ctx"}
