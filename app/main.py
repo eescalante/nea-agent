@@ -204,10 +204,10 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                     LlmSinOrganizacion()
                     if settings.multi_org
                     else OpenAiLlm(
-                        settings.llm_api_key,
+                        settings.llm_api_key_efectiva,
                         settings.llm_model,
                         transcribe_model=settings.llm_transcribe_model,
-                        base_url=settings.llm_base_url or None,
+                        base_url=settings.llm_base_url_efectiva or None,
                         reasoning_effort=settings.llm_reasoning_effort,
                         provider_sort=settings.llm_provider_sort,
                         timeout=settings.llm_timeout_seconds,

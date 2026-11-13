@@ -255,7 +255,33 @@ class Settings(BaseSettings):
         que TODA nota de voz falle. Se detecta al arrancar y se avisa una vez,
         en vez de dejar que se descubra con un cliente esperando respuesta.
         """
-        return bool(self.llm_base_url) and self.llm_transcribe_model == "whisper-1"
+        return bool(self.llm_base_url_efectiva) and self.llm_transcribe_model == "whisper-1"
+
+    @property
+    def piensa_por_el_crm(self) -> bool:
+        """¿Quien piensa es el CRM, con SU llave de IA?
+
+        Sin `LLM_API_KEY`, en modo dispatch, Nea no lleva llave de IA: le pide
+        al CRM que piense (`/api/bot/llm`), con la misma `CRM_BOT_API_KEY` con
+        la que ya le contesta. Así la llave, el modelo, los parámetros y el
+        consumo se manejan en un solo lugar (Ajustes → IA del CRM).
+        """
+        return (
+            not self.llm_api_key
+            and self.dispatch_mode
+            and not self.multi_org
+            and bool(self.crm_bot_api_key)
+        )
+
+    @property
+    def llm_api_key_efectiva(self) -> str:
+        return self.crm_bot_api_key if self.piensa_por_el_crm else self.llm_api_key
+
+    @property
+    def llm_base_url_efectiva(self) -> str:
+        if self.piensa_por_el_crm:
+            return f"{self.crm_base_url.rstrip('/')}/api/bot/llm"
+        return self.llm_base_url
 
     @property
     def multi_org(self) -> bool:
