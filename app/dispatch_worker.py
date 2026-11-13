@@ -22,15 +22,18 @@ async def handoff(ctx: Any, payload: dict[str, Any]) -> None:
 
 
 async def drain_one(ctx: Any) -> bool:
-    from app.dispatch import EVENTO_OLVIDO, _procesar, olvidar
+    from app.dispatch import EVENTO_REINICIO, EVENTOS_DE_OLVIDO, _procesar, olvidar, refrescar_perfil
     async with ctx.store.claim_dispatch() as job:
         if job is None:
             return False
 
         async def execute() -> None:
-            if job.payload.get("type") == EVENTO_OLVIDO:
+            if job.payload.get("type") in EVENTOS_DE_OLVIDO:
                 # Not a turn: nothing to hand off, and replaying it is safe.
                 await olvidar(ctx, job.payload)
+                if job.payload.get("type") == EVENTO_REINICIO:
+                    # Fork Quasar: el reinicio también relee el perfil, como /reset.
+                    refrescar_perfil(ctx)
                 return
             expires = job.payload.get("expiresAt")
             expired = bool(expires and datetime.fromisoformat(expires.replace("Z", "+00:00")) <= datetime.now(timezone.utc))

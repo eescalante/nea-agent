@@ -33,7 +33,7 @@ from fastapi.responses import JSONResponse
 from app.multiorg import organizacion_del_despacho
 from app.http_limits import limited_body
 from app.state import AppContext, InboundMessage
-from app.turn import conversation_lock, handle_flush
+from app.turn import _refrescar_perfil as refrescar_perfil, conversation_lock, handle_flush
 
 logger = logging.getLogger("nea.dispatch")
 
@@ -43,6 +43,12 @@ router = APIRouter()
 # y con la MISMA firma que un despacho: es el único canal que el CRM tiene
 # hacia un cerebro, y un segundo endpoint sería una segunda URL que registrar.
 EVENTO_OLVIDO = "conversation.deleted"
+# Fork Quasar: el operador pide desde el CRM (Ajustes → Avanzado) reiniciar la
+# memoria de UNA conversación sin borrarla, o recargar el perfil del agente.
+# Viajan por la misma ruta y con la misma firma que el resto.
+EVENTO_REINICIO = "conversation.reset"
+EVENTO_RECARGA = "agent.refresh"
+EVENTOS_DE_OLVIDO = frozenset({EVENTO_OLVIDO, EVENTO_REINICIO})
 
 
 def firma_valida(body: bytes, header: str | None, secret: str) -> bool:
@@ -119,8 +125,10 @@ async def recibir(request: Request) -> Any:
     if not isinstance(payload, dict):
         return JSONResponse({"error": "cuerpo inesperado"}, status_code=400)
 
-    if payload.get("type") == EVENTO_OLVIDO:
+    if payload.get("type") in EVENTOS_DE_OLVIDO:
         return await _recibir_olvido(ctx, payload)
+    if payload.get("type") == EVENTO_RECARGA:
+        return _recibir_recarga(ctx, payload)
 
     try:
         valid = (isinstance(payload.get("dispatchId"), str) and 0 < len(payload["dispatchId"]) <= 128
@@ -144,6 +152,18 @@ async def recibir(request: Request) -> Any:
         logger.exception("no se pudo persistir el despacho")
         return JSONResponse({"error": "almacenamiento indisponible"}, status_code=503)
     ctx.dispatch_wake.set()
+    return {"status": "ok"}
+
+
+def _recibir_recarga(ctx: AppContext, payload: dict[str, Any]) -> Any:
+    """Vence el perfil en memoria: el próximo turno lo relee del CRM.
+
+    No pasa por la cola: no toca ninguna conversación y repetirlo es inocuo.
+    """
+    if not _texto(payload.get("eventId")):
+        return JSONResponse({"error": "evento inválido"}, status_code=422)
+    refrescar_perfil(ctx)
+    logger.info("perfil refrescado a pedido del CRM (%s)", payload["eventId"])
     return {"status": "ok"}
 
 
