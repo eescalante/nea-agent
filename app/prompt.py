@@ -31,22 +31,49 @@ DEFAULT_TZ = ZoneInfo("America/Mexico_City")
 # negocio y se ajusta seguido. Se puede reemplazar entero sin tocar la imagen:
 #   AGENT_VOICE_RULES_FILE=/ruta/voz.md   → se relee cuando el archivo cambia (sin reiniciar)
 #   AGENT_VOICE_RULES="- regla 1\n- regla 2"  → por entorno (un reinicio, no una recompilación)
-# Gana el archivo, luego la variable, luego el texto de abajo. Solo reemplaza el ESTILO: los
+# Gana el archivo, luego la variable, luego las reglas de abajo. Solo reemplaza el ESTILO: los
 # NUNCA, el protocolo de herramientas y el escalado siguen siendo del chasis.
-VOZ_POR_DEFECTO = """- Eres un agente de IA y lo asumes con naturalidad. Nunca finges ser humano. Si preguntan si eres bot, lo confirmas sin disculparte y sigues ayudando.
-- Español neutro de negocios, de "tú", frases cortas, cero corporativo. Si el perfil del negocio define un tono, ese tono manda.
-- Emojis: pocos y con intención. Uno en el saludo está bien y uno suelto de vez en cuando donde sume calidez — jamás muros de emojis ni uno en cada frase.
-- Seguro, no necesitado. Respetas el tiempo de la persona: vas al grano.
-- UNA pregunta por mensaje, máximo. Espejas el registro del lead: si escribe corto, respondes corto. Mensajes cortos de WhatsApp (2-4 líneas).
-- NATURAL: escribe como hablaría una persona en una conversación real. Si una frase no la diría alguien en voz alta, no la escribas. Nada de fórmulas de oficina o de radio: "recibido", "bien recibido", "queda registrado", "tomo nota", "perfecto, procedo".
-- CONCISIÓN: reacciona en media frase, con naturalidad ("Gracias por escribirnos", "Claro", "Entiendo"), y pregunta lo siguiente. NO des mini-clases ni sermones — explica a fondo SOLO si te lo piden. Nunca repitas la misma frase o estructura de un mensaje anterior: si ya lo dijiste, di algo nuevo o pregunta directo."""
+# Las reglas se dividen según QUIÉN manda en cada tema, para que dos textos nunca compitan:
+#   - UNIVERSALES: valen siempre (transparencia, una pregunta, mensajes cortos, sonar natural).
+#   - ESTILO POR DEFECTO: idioma/registro, emojis y entusiasmo. Son el valor de partida y SOLO
+#     entran si el negocio no definió un tono; si lo definió, el tono es el único texto sobre
+#     esos temas (no hay un «tú» del chasis peleando con el «voseo» del perfil).
+REGLAS_UNIVERSALES_ANTES = (
+    "- Eres un agente de IA y lo asumes con naturalidad. Nunca finges ser humano. Si preguntan si eres bot, lo confirmas sin disculparte y sigues ayudando.",
+)
+REGLAS_DE_ESTILO_POR_DEFECTO = (
+    "- Español neutro de negocios, de \"tú\", frases cortas, cero corporativo. Si el perfil del negocio define un tono, ese tono manda.",
+    "- Emojis: pocos y con intención. Uno en el saludo está bien y uno suelto de vez en cuando donde sume calidez — jamás muros de emojis ni uno en cada frase.",
+)
+REGLAS_UNIVERSALES_DESPUES = (
+    "- Seguro, no necesitado. Respetas el tiempo de la persona: vas al grano.",
+    "- UNA pregunta por mensaje, máximo. Espejas el registro del lead: si escribe corto, respondes corto. Mensajes cortos de WhatsApp (2-4 líneas).",
+    "- NATURAL: escribe como hablaría una persona en una conversación real. Si una frase no la diría alguien en voz alta, no la escribas. Nada de fórmulas de oficina o de radio: \"recibido\", \"bien recibido\", \"queda registrado\", \"tomo nota\", \"perfecto, procedo\".",
+    "- CONCISIÓN: reacciona en media frase, con naturalidad (\"Gracias por escribirnos\", \"Claro\", \"Entiendo\"), y pregunta lo siguiente. NO des mini-clases ni sermones — explica a fondo SOLO si te lo piden. Nunca repitas la misma frase o estructura de un mensaje anterior: si ya lo dijiste, di algo nuevo o pregunta directo.",
+    "- Sin euforia: nada de \"¡Buenísimo!\", \"¡Genial!\" ni \"¡Excelente!\". Reconoces lo que dice la persona con calma, salvo que el tono del negocio pida expresamente un registro más entusiasta.",
+    "- No te describas con género (\"encantada\", \"encantado\"): usa formas neutras (\"un gusto\", \"con gusto\").",
+)
+REGLA_DEL_TONO = (
+    "- El idioma, el registro, el uso de emojis y el nivel de entusiasmo los define el tono del negocio "
+    "(más abajo, en PERFIL DEL NEGOCIO): síguelo al pie de la letra, aunque difiera de lo que ves en esta sección."
+)
+
+
+def reglas_por_defecto(profile: BusinessProfile | None = None) -> str:
+    """Universales siempre; el estilo por defecto solo si el negocio no definió un tono."""
+    tiene_tono = bool(profile and (profile.tone or "").strip())
+    estilo = (REGLA_DEL_TONO,) if tiene_tono else REGLAS_DE_ESTILO_POR_DEFECTO
+    return "\n".join((*REGLAS_UNIVERSALES_ANTES, *estilo, *REGLAS_UNIVERSALES_DESPUES))
+
+
+VOZ_POR_DEFECTO = reglas_por_defecto(None)  # sin perfil: el texto de partida completo
 
 _archivos_de_voz: dict[str, tuple[float, str]] = {}
 _voz_avisada: set[str] = set()
 
 
-def reglas_de_voz() -> str:
-    """Las reglas de voz vigentes: archivo, variable de entorno o las de siempre."""
+def reglas_de_voz(profile: BusinessProfile | None = None) -> str:
+    """Las reglas de voz vigentes: archivo, variable de entorno o las de siempre (ver arriba)."""
     ruta = os.environ.get("AGENT_VOICE_RULES_FILE", "").strip()
     if ruta:
         try:
@@ -66,7 +93,7 @@ def reglas_de_voz() -> str:
     env = os.environ.get("AGENT_VOICE_RULES", "").strip()
     if env:
         return env.replace("\\n", "\n")
-    return VOZ_POR_DEFECTO
+    return reglas_por_defecto(profile)
 
 
 def _chassis(profile: BusinessProfile) -> str:
@@ -74,7 +101,7 @@ def _chassis(profile: BusinessProfile) -> str:
     text = f"""Eres {name}, el agente de IA de WhatsApp de este negocio. Atiendes a personas que escriben al número del negocio. Tu trabajo: entender qué necesita cada persona, calificarla según las instrucciones del negocio y AGENDAR una cita con el equipo cuando corresponda — o darle una salida digna cuando no.
 
 IDENTIDAD Y VOZ:
-{reglas_de_voz()}
+{reglas_de_voz(profile)}
 
 CONVERSACIÓN:
 1) Primer mensaje: saluda transparente + un gancho de valor + UNA pregunta abierta. Nada de formulario. Si el perfil define un saludo sugerido, úsalo como base. Si sabes de qué anuncio vino la persona, menciónalo.

@@ -5,7 +5,7 @@ import os
 import time
 
 from app.profile import BusinessProfile
-from app.prompt import VOZ_POR_DEFECTO, _chassis, reglas_de_voz
+from app.prompt import VOZ_POR_DEFECTO, _business_block, _chassis, reglas_de_voz
 
 PERFIL = BusinessProfile(agent_name="Quasar")
 
@@ -57,3 +57,44 @@ def test_cambiar_la_voz_no_toca_los_nunca_ni_el_resto_del_chasis(monkeypatch):
     monkeypatch.setenv("AGENT_VOICE_RULES", "- Cualquier cosa.")
     chasis = _chassis(PERFIL)
     assert "NUNCA:" in chasis and "CONVERSACIÓN:" in chasis and "IDENTIDAD Y VOZ:" in chasis
+
+
+# --- Una sola fuente de verdad por tema ---------------------------------------------------
+
+def test_con_tono_del_negocio_el_chasis_no_dice_tu_ni_emojis_para_no_competir(monkeypatch):
+    _limpio(monkeypatch)
+    perfil = BusinessProfile(agent_name="Quasar", tone="Profesional, con voseo rioplatense. Sin emojis.")
+    chasis = _chassis(perfil)
+    assert 'de "tú"' not in chasis  # el «tú» del chasis ya no pelea con el voseo del perfil
+    assert "Emojis: pocos" not in chasis
+    assert "los define el tono del negocio" in chasis
+    # y el tono del negocio es el único texto sobre esos temas (va en el bloque del perfil).
+    assert "Tono definido por el negocio: Profesional, con voseo rioplatense." in _business_block(perfil)
+
+
+def test_sin_tono_del_negocio_entra_el_estilo_por_defecto(monkeypatch):
+    _limpio(monkeypatch)
+    chasis = _chassis(BusinessProfile(agent_name="Quasar"))
+    assert 'de "tú"' in chasis and "Emojis: pocos" in chasis
+    assert "los define el tono del negocio" not in chasis
+
+
+def test_un_tono_solo_con_espacios_cuenta_como_sin_tono(monkeypatch):
+    _limpio(monkeypatch)
+    assert 'de "tú"' in _chassis(BusinessProfile(agent_name="Quasar", tone="   "))
+
+
+def test_las_universales_valen_con_y_sin_tono(monkeypatch):
+    _limpio(monkeypatch)
+    for perfil in (BusinessProfile(agent_name="Q"), BusinessProfile(agent_name="Q", tone="Formal.")):
+        chasis = _chassis(perfil)
+        for clave in ("Eres un agente de IA", "UNA pregunta por mensaje", "NATURAL:", "bien recibido", "Sin euforia", "No te describas con género"):
+            assert clave in chasis, clave
+        assert "NUNCA:" in chasis
+
+
+def test_el_archivo_o_la_variable_siguen_reemplazando_todo_el_bloque_aunque_haya_tono(monkeypatch):
+    _limpio(monkeypatch)
+    monkeypatch.setenv("AGENT_VOICE_RULES", "- Solo esto.")
+    chasis = _chassis(BusinessProfile(agent_name="Q", tone="Formal."))
+    assert "- Solo esto." in chasis and "NATURAL:" not in chasis
