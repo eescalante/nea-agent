@@ -141,6 +141,23 @@ class Settings(BaseSettings):
         default="throughput", validation_alias=AliasChoices("LLM_PROVIDER_SORT")
     )
 
+    # Marca de caché de Anthropic (`cache_control`) en el prompt de sistema.
+    #
+    # Los modelos de Claude NO cachean solos: solo cobran a una décima parte lo
+    # que se repite si el pedido dice hasta dónde llega lo repetido. Con esto
+    # encendido, el prompt de sistema viaja en dos bloques —lo fijo (chasis,
+    # perfil y conocimiento del negocio) con la marca, y lo que cambia en cada
+    # turno (fecha y hora, ficha del lead) aparte—, con el MISMO texto de
+    # siempre. Los modelos que cachean solos (GLM, OpenAI…) la ignoran.
+    #
+    # Apagado por defecto: enciéndelo cuando el modelo del negocio sea de
+    # Anthropic (p. ej. `anthropic/claude-haiku-5.5`). Solo aplica con un
+    # proveedor compatible (`LLM_BASE_URL` o el proxy del CRM): contra OpenAI
+    # directo no se manda nunca, porque su API rechaza campos que no conoce.
+    llm_cache_control: bool = Field(
+        default=False, validation_alias=AliasChoices("LLM_CACHE_CONTROL")
+    )
+
     # Cuánto se espera al proveedor del modelo en CADA intento, en segundos.
     # Vale para conversar y para transcribir notas de voz (es el mismo cliente).
     #

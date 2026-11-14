@@ -32,7 +32,7 @@ from app.stall import (
     trae_contenido,
 )
 from app.profile import resolve_profile
-from app.prompt import build_system_prompt
+from app.prompt import mensaje_de_sistema, partes_del_prompt
 from app.state import AppContext, InboundMessage, utcnow
 from app.tools import ToolRuntime, tool_schemas
 
@@ -659,7 +659,7 @@ async def run_turn(
     cron.marca("perfil")
     referral = next((m.referral_headline for m in inbound if m.referral_headline), None)
     offered = await ctx.store.get_offered_slots(conv.id)
-    system = build_system_prompt(
+    fijo, vivo = partes_del_prompt(
         profile=profile,
         context=context,
         conv=conv,
@@ -669,6 +669,9 @@ async def run_turn(
         tz=_agent_tz(settings),
         recordatorios=bool(getattr(ctx.crm, "supports_agenda_v2", False)),
     )
+    system_msg = mensaje_de_sistema(
+        fijo, vivo, bool(getattr(ctx.llm, "cache_control_activo", False))
+    )
     # Se traen más mensajes de los que ve el LLM: el candado de cierre cuenta
     # el hilo COMPLETO del lead, no solo la ventana de contexto.
     recientes = await ctx.store.recent_messages(
@@ -676,7 +679,7 @@ async def run_turn(
     )
     cron.marca("prompt")
     history = recientes[-settings.history_window :]
-    messages: list[dict[str, Any]] = [{"role": "system", "content": system}] + [
+    messages: list[dict[str, Any]] = [system_msg] + [
         {"role": m.role, "content": m.content} for m in history
     ]
     # Hostilidad sostenida (AC-18): el CONTEO es determinista — el LLM salió

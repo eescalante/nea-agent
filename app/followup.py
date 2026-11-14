@@ -17,7 +17,7 @@ from app.crm import CrmConflict, CrmError
 from app.formato import a_whatsapp
 from app.llm import LlmExhausted, conversacion_actual
 from app.profile import resolve_profile
-from app.prompt import FOLLOWUP_INSTRUCTION, build_system_prompt
+from app.prompt import FOLLOWUP_INSTRUCTION, mensaje_de_sistema, partes_del_prompt
 from app.state import AppContext, Conversation, utcnow
 from app.multiorg import ctx_de_organizacion
 from app.turn import conversation_lock
@@ -145,7 +145,7 @@ class FollowupWorker:
                 ),
             )
 
-        system = build_system_prompt(
+        fijo, vivo = partes_del_prompt(
             profile=await resolve_profile(ctx),
             context=context,
             conv=conv,
@@ -157,7 +157,7 @@ class FollowupWorker:
             conv.id, ctx.settings.history_window
         )
         messages: list[dict[str, Any]] = (
-            [{"role": "system", "content": system}]
+            [mensaje_de_sistema(fijo, vivo, bool(getattr(ctx.llm, "cache_control_activo", False)))]
             + [{"role": m.role, "content": m.content} for m in history]
             + [{"role": "system", "content": FOLLOWUP_INSTRUCTION}]
         )

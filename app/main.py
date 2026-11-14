@@ -211,6 +211,7 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                         reasoning_effort=settings.llm_reasoning_effort,
                         provider_sort=settings.llm_provider_sort,
                         timeout=settings.llm_timeout_seconds,
+                        cache_control=settings.llm_cache_control,
                     )
                 ),
                 # En multi-organización el perfil es de cada negocio y lo

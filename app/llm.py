@@ -104,6 +104,7 @@ class OpenAiLlm:
         reasoning_effort: str = "",
         provider_sort: str = "",
         timeout: float = DEFAULT_TIMEOUT,
+        cache_control: bool = False,
     ) -> None:
         # base_url ≠ None → proveedor OpenAI-compatible (p. ej. OpenRouter,
         # para el bench de modelos del 002). Ojo: la transcripción de audio
@@ -129,6 +130,9 @@ class OpenAiLlm:
         )
         self._model = model
         self._transcribe_model = transcribe_model
+        # ¿El prompt de sistema lleva la marca de caché de Anthropic? Solo con un
+        # proveedor compatible: la API de OpenAI rechaza los campos que no conoce.
+        self.cache_control_activo = bool(cache_control) and base_url is not None
         self._manda_conversacion = bool(base_url) and base_url.rstrip("/").endswith(
             "/api/bot/llm"
         )

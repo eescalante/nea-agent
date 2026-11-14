@@ -361,7 +361,33 @@ def _linea_cerrada(cerrada: dict) -> str:
     return f"- Su cita del {label} ya no está vigente."
 
 
-def build_system_prompt(
+def build_system_prompt(**kwargs) -> str:
+    """El prompt de sistema completo, como un solo texto."""
+    fijo, vivo = partes_del_prompt(**kwargs)
+    return fijo + vivo
+
+
+def mensaje_de_sistema(fijo: str, vivo: str, con_cache: bool) -> dict:
+    """El mensaje de sistema listo para el LLM.
+
+    Con `con_cache`, va en DOS bloques: el fijo (chasis, perfil y conocimiento
+    del negocio) lleva la marca de caché de Anthropic (`cache_control`) y el
+    vivo (fecha y hora, ficha del lead, horarios ofrecidos) va aparte, porque
+    cambia en cada turno. Así lo que se repite se cobra a una décima parte. El
+    texto es EXACTAMENTE el mismo: solo cambia cómo viaja. Sin `con_cache`, un
+    solo texto, como siempre.
+    """
+    if not con_cache:
+        return {"role": "system", "content": fijo + vivo}
+    bloques: list[dict] = [
+        {"type": "text", "text": fijo, "cache_control": {"type": "ephemeral"}}
+    ]
+    if vivo:
+        bloques.append({"type": "text", "text": vivo})
+    return {"role": "system", "content": bloques}
+
+
+def partes_del_prompt(
     *,
     profile: BusinessProfile,
     context: dict | None,
@@ -372,8 +398,9 @@ def build_system_prompt(
     now: datetime | None = None,
     tz: ZoneInfo | None = None,
     recordatorios: bool = False,
-) -> str:
-    """Chasis + perfil del negocio + bloque de contexto vivo de esta conversación.
+) -> tuple[str, str]:
+    """Chasis + perfil del negocio (lo fijo) y el bloque de contexto vivo de esta
+    conversación (lo que cambia en cada turno), por separado.
 
     `recordatorios`: ¿el CRM manda recordatorios de la cita? Solo la agenda v2
     de Vocero Cloud; el CRM raíz no. Sin la capacidad, el agente no los ofrece.
@@ -451,13 +478,8 @@ def build_system_prompt(
 
     lines.extend(_booking_lines((context or {}).get("booking"), now))
 
-    return (
-        _chassis(profile)
-        + "\n\n"
-        + _business_block(profile)
-        + "\n"
-        + "\n".join(lines)
-    )
+    fijo = _chassis(profile) + "\n\n" + _business_block(profile) + "\n"
+    return fijo, "\n".join(lines)
 
 
 FOLLOWUP_INSTRUCTION = (

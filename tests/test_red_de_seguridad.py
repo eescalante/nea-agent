@@ -257,7 +257,7 @@ async def test_multiorg_el_handoff_lleva_la_credencial_de_esa_organizacion(
     def prompt_roto(**_kwargs):
         raise RuntimeError("un fallo de código armando el prompt")
 
-    monkeypatch.setattr(turn, "build_system_prompt", prompt_roto)
+    monkeypatch.setattr(turn, "partes_del_prompt", prompt_roto)
     ctx = AppContext(
         settings=Settings(
             _env_file=None, vocero_mode="cloud", crm_organization="",
