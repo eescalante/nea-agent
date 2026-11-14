@@ -157,7 +157,7 @@ class FollowupWorker:
             conv.id, ctx.settings.history_window
         )
         messages: list[dict[str, Any]] = (
-            [mensaje_de_sistema(fijo, vivo, bool(getattr(ctx.llm, "cache_control_activo", False)))]
+            [mensaje_de_sistema(fijo, vivo, bool(getattr(ctx.llm, "mensaje_en_bloques", False)))]
             + [{"role": m.role, "content": m.content} for m in history]
             + [{"role": "system", "content": FOLLOWUP_INSTRUCTION}]
         )

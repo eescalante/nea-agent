@@ -367,21 +367,22 @@ def build_system_prompt(**kwargs) -> str:
     return fijo + vivo
 
 
-def mensaje_de_sistema(fijo: str, vivo: str, con_cache: bool) -> dict:
+def mensaje_de_sistema(fijo: str, vivo: str, en_bloques: bool) -> dict:
     """El mensaje de sistema listo para el LLM.
 
-    Con `con_cache`, va en DOS bloques: el fijo (chasis, perfil y conocimiento
-    del negocio) lleva la marca de caché de Anthropic (`cache_control`) y el
-    vivo (fecha y hora, ficha del lead, horarios ofrecidos) va aparte, porque
-    cambia en cada turno. Así lo que se repite se cobra a una décima parte. El
-    texto es EXACTAMENTE el mismo: solo cambia cómo viaja. Sin `con_cache`, un
-    solo texto, como siempre.
+    Con `en_bloques` (solo cuando se habla con el proxy del CRM) va en DOS bloques de texto SIN marca: el fijo
+    (chasis, perfil y conocimiento del negocio) y el vivo (fecha y hora, ficha
+    del lead, horarios ofrecidos), que cambia en cada turno. Nea nunca pone
+    `cache_control`: si conviene marcar la caché del prompt, lo decide el CRM
+    según el modelo en uso (Ajustes -> IA -> Parametros del modelo). El texto es
+    EXACTAMENTE el mismo: el CRM, cuando no marca, une los bloques con
+    `"".join(...)`, es decir `fijo + vivo`, sin separador. Sin `en_bloques`
+    (OpenAI directo, OpenRouter directo u otro compatible), un solo texto, como
+    siempre.
     """
-    if not con_cache:
+    if not en_bloques:
         return {"role": "system", "content": fijo + vivo}
-    bloques: list[dict] = [
-        {"type": "text", "text": fijo, "cache_control": {"type": "ephemeral"}}
-    ]
+    bloques: list[dict] = [{"type": "text", "text": fijo}]
     if vivo:
         bloques.append({"type": "text", "text": vivo})
     return {"role": "system", "content": bloques}

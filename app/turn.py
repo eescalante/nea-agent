@@ -670,7 +670,7 @@ async def run_turn(
         recordatorios=bool(getattr(ctx.crm, "supports_agenda_v2", False)),
     )
     system_msg = mensaje_de_sistema(
-        fijo, vivo, bool(getattr(ctx.llm, "cache_control_activo", False))
+        fijo, vivo, bool(getattr(ctx.llm, "mensaje_en_bloques", False))
     )
     # Se traen más mensajes de los que ve el LLM: el candado de cierre cuenta
     # el hilo COMPLETO del lead, no solo la ventana de contexto.

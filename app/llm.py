@@ -104,7 +104,6 @@ class OpenAiLlm:
         reasoning_effort: str = "",
         provider_sort: str = "",
         timeout: float = DEFAULT_TIMEOUT,
-        cache_control: bool = False,
     ) -> None:
         # base_url ≠ None → proveedor OpenAI-compatible (p. ej. OpenRouter,
         # para el bench de modelos del 002). Ojo: la transcripción de audio
@@ -130,12 +129,16 @@ class OpenAiLlm:
         )
         self._model = model
         self._transcribe_model = transcribe_model
-        # ¿El prompt de sistema lleva la marca de caché de Anthropic? Solo con un
-        # proveedor compatible: la API de OpenAI rechaza los campos que no conoce.
-        self.cache_control_activo = bool(cache_control) and base_url is not None
+        # ¿El prompt de sistema viaja en dos bloques de texto (fijo y vivo)? SOLO
+        # cuando se habla con el proxy del CRM, que es quien decide si marca la
+        # caché (`cache_control`) y, si no, los une en un solo texto. Con
+        # OpenRouter directo, otro compatible u OpenAI directo, nadie los
+        # marcaría y algún proveedor podría rechazar el formato: un solo texto.
+        # Nea nunca pone `cache_control`.
         self._manda_conversacion = bool(base_url) and base_url.rstrip("/").endswith(
             "/api/bot/llm"
         )
+        self.mensaje_en_bloques = self._manda_conversacion
         # Los dos ajustes de velocidad. Se deciden una vez, aqui, y viajan en
         # cada llamada; `_extras_ok` los apaga solos si el proveedor se queja.
         self._reasoning_effort = reasoning_effort.strip()

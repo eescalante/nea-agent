@@ -1,4 +1,4 @@
-"""Marca de caché de Anthropic en el prompt de sistema (LLM_CACHE_CONTROL)."""
+"""El prompt de sistema en dos bloques sin marca (la caché la decide el CRM)."""
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -47,45 +47,44 @@ def test_lo_fijo_no_trae_nada_que_cambie_por_turno():
     assert otro == fijo
 
 
-def test_sin_cache_un_solo_texto_como_siempre():
+def test_sin_bloques_un_solo_texto_como_siempre():
     fijo, vivo = _partes()
     m = mensaje_de_sistema(fijo, vivo, False)
     assert m == {"role": "system", "content": fijo + vivo}
 
 
-def test_con_cache_dos_bloques_y_la_marca_solo_en_el_fijo():
+def test_en_bloques_dos_textos_sin_marca():
     fijo, vivo = _partes()
     m = mensaje_de_sistema(fijo, vivo, True)
     assert m["role"] == "system"
     b = m["content"]
-    assert [x["type"] for x in b] == ["text", "text"]
-    assert b[0]["text"] == fijo and b[0]["cache_control"] == {"type": "ephemeral"}
-    assert b[1]["text"] == vivo and "cache_control" not in b[1]
+    assert b == [{"type": "text", "text": fijo}, {"type": "text", "text": vivo}]
+    assert all("cache_control" not in x for x in b)
+    # El CRM, cuando no marca, une los bloques con "" (sin separador).
     assert "".join(x["text"] for x in b) == fijo + vivo
 
 
-def test_con_cache_y_sin_contexto_vivo_no_manda_un_bloque_vacio():
+def test_en_bloques_y_sin_contexto_vivo_no_manda_un_bloque_vacio():
     m = mensaje_de_sistema("fijo", "", True)
-    assert len(m["content"]) == 1
+    assert m["content"] == [{"type": "text", "text": "fijo"}]
 
 
-def test_solo_se_activa_con_un_proveedor_compatible():
-    assert OpenAiLlm("k", "m", base_url="https://crm/api/bot/llm", cache_control=True).cache_control_activo
-    assert OpenAiLlm("k", "m", base_url="https://openrouter.ai/api/v1", cache_control=True).cache_control_activo
-    # Contra OpenAI directo nunca: su API rechaza los campos que no conoce.
-    assert not OpenAiLlm("k", "m", base_url=None, cache_control=True).cache_control_activo
-    # Apagado por defecto.
-    assert not OpenAiLlm("k", "m", base_url="https://crm/api/bot/llm").cache_control_activo
+def test_solo_va_en_bloques_con_el_proxy_del_crm():
+    assert OpenAiLlm("k", "m", base_url="https://crm/api/bot/llm").mensaje_en_bloques
+    assert OpenAiLlm("k", "m", base_url="https://crm/api/bot/llm/").mensaje_en_bloques
+    # OpenRouter directo u otro compatible: nadie marcaría los bloques, un solo texto.
+    assert not OpenAiLlm("k", "m", base_url="https://openrouter.ai/api/v1").mensaje_en_bloques
+    # Contra OpenAI directo, un solo texto como siempre.
+    assert not OpenAiLlm("k", "m", base_url=None).mensaje_en_bloques
 
 
-def test_la_variable_de_entorno(monkeypatch):
+def test_la_variable_vieja_ya_no_existe(monkeypatch):
     base = dict(vocero_mode="dispatch", crm_base_url="https://crm.example.com/", crm_bot_api_key="b")
-    assert Settings(**base).llm_cache_control is False
     monkeypatch.setenv("LLM_CACHE_CONTROL", "true")
-    assert Settings(**base).llm_cache_control is True
+    assert not hasattr(Settings(**base), "llm_cache_control")
 
 
-def test_el_pedido_lleva_los_bloques_solo_si_esta_activo():
+def test_el_pedido_lleva_los_bloques_sin_marca():
     # `complete()` manda los mensajes tal cual los arma el turno.
     class _C:
         def __init__(self):
@@ -98,11 +97,11 @@ def test_el_pedido_lleva_los_bloques_solo_si_esta_activo():
 
     import asyncio
 
-    llm = OpenAiLlm("k", "m", base_url="https://crm/api/bot/llm", cache_control=True)
+    llm = OpenAiLlm("k", "m", base_url="https://crm/api/bot/llm")
     comp = _C()
     llm._client = SimpleNamespace(chat=SimpleNamespace(completions=comp))
     fijo, vivo = _partes()
-    msgs = [mensaje_de_sistema(fijo, vivo, llm.cache_control_activo), {"role": "user", "content": "hola"}]
+    msgs = [mensaje_de_sistema(fijo, vivo, llm.mensaje_en_bloques), {"role": "user", "content": "hola"}]
     asyncio.run(llm.complete(msgs))
     enviado = comp.llamadas[0]["messages"][0]["content"]
-    assert isinstance(enviado, list) and enviado[0]["cache_control"] == {"type": "ephemeral"}
+    assert isinstance(enviado, list) and "cache_control" not in enviado[0]

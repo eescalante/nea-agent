@@ -184,7 +184,6 @@ class RegistroDeOrganizaciones:
                 # Y el tope por intento, tambien de esta Nea: el CRM reenvia,
                 # pero quien espera al proveedor colgado es el turno de aqui.
                 timeout=por_defecto.llm_timeout_seconds,
-                cache_control=por_defecto.llm_cache_control,
             )
             self._llms[clave] = cliente
         return cliente
