@@ -458,6 +458,11 @@ class ToolRuntime:
         self.proposed = False
         # Fork Quasar: el texto de la nota de voz que se mandó en este turno.
         self.voice_sent: str | None = None
+        # El modelo llamó a la herramienta de voz (petición expresa del lead) y falló
+        # por cualquier motivo: su texto de disculpa va por escrito, nunca como audio.
+        self.voice_failed: bool = False
+        # El modelo ya usó la herramienta de voz en este turno (con o sin éxito).
+        self.voice_attempted: bool = False
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         # Qué herramienta llama el modelo en cada ronda del turno: sin esto, ante un turno
@@ -505,13 +510,16 @@ class ToolRuntime:
     async def _send_voice_note(self, args: dict[str, Any]) -> dict[str, Any]:
         if not self.voz_habilitada:
             return {"ok": False, "error": "herramienta no disponible"}
+        self.voice_attempted = True
         text = str(args.get("text") or "").strip()
         if not text:
+            self.voice_failed = True
             return {"ok": False, "error": "falta el texto del audio"}
         if self.voice_sent is not None:
             return {"ok": False, "error": "ya mandaste un audio en este turno; responde por texto"}
         if len(text) > VOICE_MAX_CHARS:
             # No cuenta como audio mandado: el modelo reescribe más corto y reintenta.
+            self.voice_failed = True
             return {
                 "ok": False,
                 "error": "texto demasiado largo",
@@ -530,6 +538,7 @@ class ToolRuntime:
             }
         except CrmError as exc:
             logger.warning("tools: send_voice_note falló: %s", exc)
+            self.voice_failed = True
             return {
                 "ok": False,
                 "error": "no se pudo mandar el audio",

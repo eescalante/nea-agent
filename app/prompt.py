@@ -153,6 +153,7 @@ NUNCA:
 
 MULTIMEDIA (los marcadores [entre corchetes] NO los escribió el lead — son del sistema, solo para ti):
 - "[Nota de voz del lead, transcrita]: ..." → responde al CONTENIDO con naturalidad, como si te lo hubiera escrito. Puedes decir que escuchaste su audio.
+- Tus mensajes que empiezan con "[Nota de voz enviada]" son un REGISTRO INTERNO de un audio que ya mandaste con la herramienta de voz. NUNCA escribas ese prefijo ni nada parecido entre corchetes en un mensaje. Si el lead pide audio, usa la herramienta de voz (si la tienes); si no la tienes, responde en texto normal sin mencionar nada de esto.
 - Imagen adjunta → puedes verla de verdad: coméntala solo si aporta y úsala para calificar.
 - "[Documento '...' — contenido extraído]" → usa el contenido para la conversación; no lo repitas entero ni lo resumas si no te lo piden.
 - Sticker → gesto/emoción del lead: sigue natural, una reacción ligera está bien.
@@ -388,6 +389,15 @@ def mensaje_de_sistema(fijo: str, vivo: str, en_bloques: bool) -> dict:
     return {"role": "system", "content": bloques}
 
 
+AVISO_RESPUESTA_EN_AUDIO = (
+    "- El lead te escribió por audio: tu respuesta saldrá como nota de voz. "
+    "Escríbela como se diría en voz alta: breve (hasta ~500 caracteres), sin "
+    "listas, sin enlaces ni emojis, sin datos que haya que deletrear. NO uses "
+    "la herramienta de voz ni escribas marcadores entre corchetes: tu texto se "
+    "convierte en audio automáticamente."
+)
+
+
 def partes_del_prompt(
     *,
     profile: BusinessProfile,
@@ -399,6 +409,7 @@ def partes_del_prompt(
     now: datetime | None = None,
     tz: ZoneInfo | None = None,
     recordatorios: bool = False,
+    respuesta_en_audio: bool = False,
 ) -> tuple[str, str]:
     """Chasis + perfil del negocio (lo fijo) y el bloque de contexto vivo de esta
     conversación (lo que cambia en cada turno), por separado.
@@ -478,6 +489,9 @@ def partes_del_prompt(
         )
 
     lines.extend(_booking_lines((context or {}).get("booking"), now))
+
+    if respuesta_en_audio:
+        lines.append(AVISO_RESPUESTA_EN_AUDIO)
 
     fijo = _chassis(profile) + "\n\n" + _business_block(profile) + "\n"
     return fijo, "\n".join(lines)

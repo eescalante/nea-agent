@@ -34,9 +34,66 @@ from app.stall import (
 from app.profile import resolve_profile
 from app.prompt import mensaje_de_sistema, partes_del_prompt
 from app.state import AppContext, InboundMessage, utcnow
-from app.tools import ToolRuntime, tool_schemas
+from app.tools import VOICE_MAX_CHARS, ToolRuntime, tool_schemas
 
 logger = logging.getLogger("nea.turn")
+
+# Registro interno del historial («[Nota de voz enviada] ...»): el modelo lo
+# imita y lo escribe como texto. Backstop determinista para que el lead no lo vea.
+_MARCADOR_VOZ = re.compile(r"^\s*(?:\[\s*nota\s+de\s+voz\s+enviada\s*\]\s*)+", re.IGNORECASE)
+
+
+def quitar_marcador_de_voz(texto: str) -> tuple[str, bool]:
+    """Quita el prefijo «[Nota de voz enviada]» de un texto. Devuelve (texto, quitado)."""
+    limpio = _MARCADOR_VOZ.sub("", texto or "", count=1)
+    if limpio == (texto or ""):
+        return (texto or "").strip(), False
+    return limpio.strip(), True
+
+_URL_EN_TEXTO = re.compile(r"https?://|www\.", re.IGNORECASE)
+_ENLACE_MD_AUDIO = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+
+
+def es_turno_de_audio(profile: Any, inbound: list[InboundMessage]) -> bool:
+    """¿Este turno responde a un lead que mandó un audio (nota de voz o archivo) y el dueño lo habilitó?
+
+    El despacho del CRM no trae el flag de nota de voz, solo `type == "audio"`.
+    """
+    return bool(
+        getattr(profile, "voice", False)
+        and getattr(profile, "voice_reply_to_audio", False)
+        and any(
+            getattr(m, "media_voice", False) or getattr(m, "type", None) == "audio"
+            for m in inbound
+        )
+    )
+
+
+def texto_para_audio(texto: str | None) -> str:
+    """El texto como se dirá en voz alta: sin Markdown (`*`, `_`, `#`, ``` ` ```, viñetas)."""
+    s = _ENLACE_MD_AUDIO.sub(r"\1", texto or "")
+    s = re.sub(r"(?m)^\s*(?:[-*•>]+|#{1,6}|\d+[.)])\s+", "", s)
+    s = re.sub(r"[*_#`~]", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def debe_responder_con_audio(
+    profile: Any, inbound: list[InboundMessage], runtime: Any, texto: str | None
+) -> bool:
+    """Decisión pura: ¿la respuesta de texto de este turno sale como nota de voz?"""
+    if not es_turno_de_audio(profile, inbound):
+        return False
+    if getattr(runtime, "voice_sent", None) is not None:
+        return False  # el modelo ya mandó audio por petición expresa
+    if getattr(runtime, "voice_failed", False) or getattr(runtime, "voice_attempted", False):
+        return False  # usó la herramienta de voz: lo que escriba (p. ej. una disculpa) va por texto
+    if getattr(runtime, "booking_confirmation", None):
+        return False  # la confirmación de cita lleva enlace: va por escrito
+    if not texto or not texto.strip() or _URL_EN_TEXTO.search(texto):
+        return False
+    limpio = texto_para_audio(texto)
+    return bool(limpio) and len(limpio) <= VOICE_MAX_CHARS
+
 
 MAX_TOOL_ROUNDS = 5
 # Mensajes que se traen, como mínimo, para contar el hilo del lead (el LLM ve
@@ -668,6 +725,7 @@ async def run_turn(
         agenda=ctx.agenda_enabled,
         tz=_agent_tz(settings),
         recordatorios=bool(getattr(ctx.crm, "supports_agenda_v2", False)),
+        respuesta_en_audio=es_turno_de_audio(profile, inbound),
     )
     system_msg = mensaje_de_sistema(
         fijo, vivo, bool(getattr(ctx.llm, "mensaje_en_bloques", False))
@@ -771,6 +829,31 @@ async def run_turn(
     # historial es lo ya convertido para que el modelo no aprenda de vuelta
     # el formato que el lead ve roto (app/formato.py).
     sent = False
+    if final_text:
+        final_text, quitado = quitar_marcador_de_voz(final_text)
+        if quitado:
+            logger.warning("turno %s: el modelo escribió el marcador de nota de voz como texto — lo quito", identity)
+    if debe_responder_con_audio(profile, inbound, runtime, final_text):
+        # El lead escribió por audio y el dueño lo habilitó: la respuesta sale como
+        # nota de voz. Si falla, cae al texto de siempre.
+        voz = texto_para_audio(final_text)
+        logger.info("turno %s: turno de audio → respondo por voz", identity)
+        try:
+            await ctx.crm.send_voice(str(crm_conv_id), voz)
+        except CrmUnreachable as exc:
+            # Sin respuesta a tiempo: el CRM pudo haberlo mandado igual (misma
+            # lógica que la herramienta): no se repite por texto.
+            logger.warning("turno %s: respuesta por audio sin confirmar: %s", identity, exc)
+            runtime.voice_sent = voz
+            final_text = None
+        except Exception as exc:  # noqa: BLE001 - jamás tumba el turno; cae a texto
+            logger.warning("turno %s: no pude responder por audio (%s) — va por texto", identity, exc)
+        else:
+            runtime.voice_sent = voz
+            final_text = None
+    elif es_turno_de_audio(profile, inbound) and runtime.voice_sent is None and final_text:
+        logger.info("turno %s: turno de audio → respondo por texto", identity)
+        logger.warning("turno %s: respuesta no apta para audio (enlace, larga o confirmación) — va por texto", identity)
     if runtime.voice_sent is not None:
         # Fork Quasar: el audio ya salió; queda en el historial para que el modelo
         # sepa qué dijo y no lo repita (el CRM lo guarda como nota de voz).

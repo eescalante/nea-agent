@@ -4,6 +4,19 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 `vX.Y.Z` publica la imagen `ghcr.io/kevinrivm/nea-agent:X.Y.Z` (README,
 «Instalar»).
 
+## Sin publicar
+
+### Nuevo
+
+- **Responde por nota de voz cuando el lead mandó una nota de voz** (apagado
+  por defecto). Si el CRM trae `profile.voiceReplyToAudio` en `true` y la voz
+  está habilitada, el turno cuyo mensaje incluye una nota de voz sale como
+  audio: el prompt vivo le pide un texto hablado y breve, y Nea lo manda con
+  `send_voice`. Si la respuesta lleva enlaces, pasa de 800 caracteres, el
+  modelo ya mandó audio por su cuenta o el CRM rechaza el envío (límite de
+  audios, voz apagada…), cae al texto de siempre. Un CRM viejo no manda el
+  campo: nada cambia.
+
 ## 1.1.0 — 2026-10-08
 
 Dos PR sobre 1.0.0: #36 y #38. Nada se rompe al actualizar.

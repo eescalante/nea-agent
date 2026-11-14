@@ -51,6 +51,9 @@ class BusinessProfile:
     # Fork Quasar: el CRM habilita mandar notas de voz (interruptor de Ajustes → IA
     # y herramienta del perfil). Sin esto la herramienta ni se le muestra al modelo.
     voice: bool = False
+    # Responder por nota de voz cuando el lead escribió por audio (apagado por
+    # defecto; un CRM viejo no manda el campo). Solo cuenta con la voz habilitada.
+    voice_reply_to_audio: bool = False
 
     @property
     def has_knowledge(self) -> bool:
@@ -80,6 +83,7 @@ def profile_from_payload(payload: dict[str, Any], default_name: str) -> Business
         kb_text=kb_text,
         resources=resources,
         voice="voz" in (prof.get("tools") or []),
+        voice_reply_to_audio=prof.get("voiceReplyToAudio") is True,
     )
 
 
