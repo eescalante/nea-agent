@@ -18,9 +18,21 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from contextvars import ContextVar
+
 from openai import AsyncOpenAI
 
 logger = logging.getLogger("nea.llm")
+
+
+#: Costo por conversación. Cuando Nea piensa POR el CRM (`/api/bot/llm`), cada
+#: pedido lleva el id de la conversación del CRM en este encabezado, para que
+#: el CRM anote cuánto costó cada conversación. Solo viaja a ese proxy: a un
+#: proveedor directo (OpenAI, OpenRouter) no se le manda nada.
+ENCABEZADO_CONVERSACION = "X-Vocero-Conversation"
+conversacion_actual: ContextVar[str | None] = ContextVar(
+    "conversacion_actual", default=None
+)
 
 
 class LlmExhausted(Exception):
@@ -117,6 +129,9 @@ class OpenAiLlm:
         )
         self._model = model
         self._transcribe_model = transcribe_model
+        self._manda_conversacion = bool(base_url) and base_url.rstrip("/").endswith(
+            "/api/bot/llm"
+        )
         # Los dos ajustes de velocidad. Se deciden una vez, aqui, y viajan en
         # cada llamada; `_extras_ok` los apaga solos si el proveedor se queja.
         self._reasoning_effort = reasoning_effort.strip()
@@ -174,6 +189,13 @@ class OpenAiLlm:
                 await asyncio.sleep(1.0)
         raise LlmExhausted(str(last_error))
 
+    def _por_conversacion(self) -> dict[str, Any]:
+        """El encabezado de la conversación en curso, si toca mandarlo."""
+        conversacion = conversacion_actual.get()
+        if self._manda_conversacion and conversacion:
+            return {"extra_headers": {ENCABEZADO_CONVERSACION: conversacion}}
+        return {}
+
     async def _transcribir_por_chat(self, data: bytes, mime: str) -> str:
         """El audio, en base64, dentro de un mensaje de chat.
 
@@ -190,6 +212,7 @@ class OpenAiLlm:
         for attempt in range(2):
             try:
                 resp = await self._client.chat.completions.create(
+                    **self._por_conversacion(),
                     model=self._transcribe_model,
                     messages=[
                         {
@@ -286,6 +309,7 @@ class OpenAiLlm:
                 extra = self._extras()
                 if extra:
                     kwargs["extra_body"] = extra
+                kwargs.update(self._por_conversacion())
                 resp = await self._client.chat.completions.create(
                     model=self._model, messages=messages, **kwargs
                 )

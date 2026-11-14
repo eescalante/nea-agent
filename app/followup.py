@@ -15,7 +15,7 @@ from typing import Any
 
 from app.crm import CrmConflict, CrmError
 from app.formato import a_whatsapp
-from app.llm import LlmExhausted
+from app.llm import LlmExhausted, conversacion_actual
 from app.profile import resolve_profile
 from app.prompt import FOLLOWUP_INSTRUCTION, build_system_prompt
 from app.state import AppContext, Conversation, utcnow
@@ -161,6 +161,7 @@ class FollowupWorker:
             + [{"role": m.role, "content": m.content} for m in history]
             + [{"role": "system", "content": FOLLOWUP_INSTRUCTION}]
         )
+        conversacion_actual.set(str(crm_conv_id))
         try:
             reply = await ctx.llm.complete(messages, tools=None)
         except LlmExhausted as exc:

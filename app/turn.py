@@ -23,7 +23,7 @@ from app.config import canonical_identity
 from app.crm import CrmConflict, CrmError, CrmUnreachable
 from app.formato import a_whatsapp
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
-from app.llm import LlmExhausted
+from app.llm import LlmExhausted, conversacion_actual
 from app.stall import (
     ALERTA as STALL_ALERT,
     FICHA_CIERRE,
@@ -211,6 +211,9 @@ async def handle_flush(
     nada que hacer.
     """
     turno = _Turno(crm_conversation_id=crm_conversation_id or None)
+    # Costo por conversación: lo que piense este turno lleva su conversación
+    # (o ninguna, para no heredar la del turno anterior de este mismo hilo).
+    conversacion_actual.set(turno.crm_conversation_id)
     clave = _clave(ctx, identity)
     try:
         async with conversation_lock(ctx, identity):
@@ -600,6 +603,7 @@ async def run_turn(
     # Desde aquí el turno es de Nea: si revienta, la red de seguridad de
     # handle_flush sabe a qué conversación del CRM avisarle.
     turno.crm_conversation_id = str(crm_conv_id)
+    conversacion_actual.set(turno.crm_conversation_id)
 
     await ctx.store.update_conversation(
         conv.id,
