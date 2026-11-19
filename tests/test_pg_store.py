@@ -957,3 +957,52 @@ async def test_olvidar_borra_los_despachos_guardados_menos_el_que_corre(store):
         ("org_b", "dsp_4"),
         ("org_a", "olvido:olv_1"),
     ]
+
+
+# ─────────────────────────────────────────── multilínea: clave por conversación (009) ───
+
+
+async def test_mismo_contacto_en_dos_lineas_son_dos_filas(store):
+    """CA-7: en modo despacho la fila es de la conversación del CRM."""
+    a = await store.get_or_create_conversation(IDENTITY, "org_a", "a", "cv_linea_a")
+    b = await store.get_or_create_conversation(IDENTITY, "org_a", "a", "cv_linea_b")
+    assert a.id != b.id
+    assert a.clave_por == b.clave_por == "conversacion"
+    assert (a.crm_conversation_id, b.crm_conversation_id) == ("cv_linea_a", "cv_linea_b")
+
+    # Repetir trae la misma fila (y refresca el slug, como la de identidad).
+    otra_vez = await store.get_or_create_conversation(IDENTITY, "org_a", "nuevo", "cv_linea_a")
+    assert otra_vez.id == a.id and otra_vez.organization_slug == "nuevo"
+
+    # El mismo id de conversación en otra organización es otra fila.
+    ajena = await store.get_or_create_conversation(IDENTITY, "org_b", "b", "cv_linea_a")
+    assert ajena.id not in (a.id, b.id)
+
+    # Y conviven con la fila por identidad del webhook directo.
+    por_identidad = await store.get_or_create_conversation(IDENTITY, "org_a", "a")
+    assert por_identidad.clave_por == "identidad"
+    assert por_identidad.id not in (a.id, b.id)
+
+    await store.add_message(a.id, "user", "solo de A")
+    assert await store.recent_messages(b.id, 10) == []
+    assert (await store.get_conversation(a.id)).crm_conversation_id == "cv_linea_a"
+
+
+async def test_olvidar_una_linea_no_toca_la_otra(store):
+    a = await store.get_or_create_conversation(IDENTITY, "", "", "cv_linea_a")
+    b = await store.get_or_create_conversation(IDENTITY, "", "", "cv_linea_b")
+    await store.add_message(b.id, "user", "yo sigo")
+    await store.enqueue_pending_send(a.id, "cv_linea_a", "pendiente")
+
+    assert await store.forget_conversation("", IDENTITY, "cv_linea_a") is True
+    assert await store.get_conversation(a.id) is None
+    assert [m.content for m in await store.recent_messages(b.id, 10)] == ["yo sigo"]
+    assert await store.forget_conversation("", IDENTITY, "cv_linea_a") is False
+
+
+async def test_una_fila_por_conversacion_exige_su_conversacion(store):
+    with pytest.raises(asyncpg.CheckViolationError):
+        await store.pool.execute(
+            "INSERT INTO bot_conversation (wa_identity, clave_por) VALUES ($1, 'conversacion')",
+            IDENTITY,
+        )

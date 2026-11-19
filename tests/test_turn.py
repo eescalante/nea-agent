@@ -5,7 +5,18 @@ import asyncio
 import json
 
 from app.llm import LlmExhausted, LlmReply, ToolCall
-from tests.conftest import FakeLLM, mock_crm_basics, wa_body
+from app.dispatch import _procesar
+from app.turn import run_turn
+from tests.conftest import (
+    CRM_CONV_ID,
+    IDENTITY,
+    FakeLLM,
+    make_ctx,
+    make_settings,
+    mock_crm_basics,
+    wa_body,
+)
+from app.state import InboundMessage
 
 
 async def test_handoff_despedida_primero_pausa_despues(ctx, client, respx_mock):
@@ -184,3 +195,62 @@ async def test_si_la_segunda_tambien_sale_mal_silencio_y_handoff(ctx, client, re
     assert routes["messages"].call_count == 0
     assert routes["handoff"].call_count == 1
     assert json.loads(routes["handoff"].calls[0].request.content)["reason"] == "error"
+
+
+# ── Clave de la conversación: identidad (webhook) o conversación del CRM (despacho) ──
+
+
+async def test_webhook_directo_olvida_la_memoria_de_una_conversacion_eliminada(respx_mock):
+    """La red del borrado sigue intacta en el webhook directo: si el CRM dice
+    que la identidad tiene OTRA conversación, la de antes se eliminó."""
+    ctx = make_ctx()
+    mock_crm_basics(respx_mock)  # el contexto dice CRM_CONV_ID
+    vieja = await ctx.store.get_or_create_conversation(IDENTITY)
+    await ctx.store.update_conversation(vieja.id, crm_conversation_id="cv_eliminada")
+    await ctx.store.add_message(vieja.id, "user", "historial de la eliminada")
+
+    await run_turn(ctx, IDENTITY, [InboundMessage("wamid.x", IDENTITY, "text", text="hola")])
+
+    (fila,) = ctx.store.conversations.values()
+    assert fila.crm_conversation_id == CRM_CONV_ID and fila.clave_por == "identidad"
+    contenidos = [m.content for m in ctx.store.messages if m.conversation_id == fila.id]
+    assert "historial de la eliminada" not in contenidos
+    await ctx.crm.aclose()
+
+
+async def test_despacho_la_misma_conversacion_sigue_en_fila(respx_mock):
+    """Con la clave por conversación, dos ráfagas de LA MISMA conversación del
+    CRM se siguen serializando: la segunda lee el contexto después de que la
+    primera contestó."""
+    routes = mock_crm_basics(respx_mock)
+
+    class LlmLento(FakeLLM):
+        async def complete(self, messages, tools=None):
+            await asyncio.sleep(0.2)
+            return await super().complete(messages, tools)
+
+    ctx = make_ctx(make_settings(vocero_mode="dispatch"), llm=LlmLento())
+
+    def despacho(n: int) -> dict:
+        return {
+            "dispatchId": f"dsp_{n}", "conversation": {"id": CRM_CONV_ID},
+            "contact": {"identity": IDENTITY},
+            "messages": [{"id": f"msg_{n}", "type": "text", "text": f"mensaje {n}"}],
+        }
+
+    primera = asyncio.create_task(_procesar(ctx, despacho(1)))
+    await asyncio.sleep(0.1)
+    await asyncio.gather(primera, _procesar(ctx, despacho(2)))
+
+    assert routes["messages"].call_count == 2
+    rutas = [
+        str(c.request.url.path)
+        for c in respx_mock.calls
+        if str(c.request.url.path) in ("/api/bot/context", "/api/bot/messages")
+    ]
+    assert rutas.index("/api/bot/messages") < rutas.index(
+        "/api/bot/context", rutas.index("/api/bot/context") + 1
+    )
+    (fila,) = ctx.store.conversations.values()
+    assert fila.clave_por == "conversacion"
+    await ctx.crm.aclose()

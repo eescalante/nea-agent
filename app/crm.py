@@ -204,11 +204,21 @@ class CrmClient:
         except httpx.HTTPError as exc:
             raise CrmUnreachable(f"error de red hacia el CRM: {exc}") from exc
 
-    async def get_context(self, wa_identity: str) -> dict[str, Any] | None:
-        """Contexto conversacional; None si el CRM aún no conoce la identidad (404)."""
-        resp = await self._request(
-            "GET", "/api/bot/context", params={"waIdentity": wa_identity}
+    async def get_context(
+        self, wa_identity: str, conversation_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """Contexto conversacional; None si el CRM aún no conoce la identidad (404).
+
+        Con `conversation_id` (modo despacho) se pide por conversación: en un
+        CRM multilínea el mismo contacto tiene una por línea, y por identidad
+        el CRM no sabría cuál de ellas devolver.
+        """
+        params = (
+            {"conversationId": conversation_id}
+            if conversation_id
+            else {"waIdentity": wa_identity}
         )
+        resp = await self._request("GET", "/api/bot/context", params=params)
         if resp.status_code == 404:
             return None
         if es_caida(resp.status_code):

@@ -13,6 +13,8 @@ import asyncpg
 from app.dispatch_store import PgDispatchStore
 
 from app.state import (
+    CLAVE_CONVERSACION,
+    CLAVE_IDENTIDAD,
     COLUMNAS_DE_CONVERSACION,
     BotMessage,
     Conversation,
@@ -43,6 +45,7 @@ def _conv_from_row(row: asyncpg.Record) -> Conversation:
         stall_since_message_id=row["stall_since_message_id"],
         organization_id=row["organization_id"],
         organization_slug=row["organization_slug"],
+        clave_por=row["clave_por"],
     )
 
 
@@ -249,29 +252,59 @@ class PgStore(PgDispatchStore):
         wa_identity: str,
         organization_id: str = "",
         organization_slug: str = "",
+        crm_conversation_id: str | None = None,
     ) -> Conversation:
-        # El conflicto se resuelve contra (organization_id, wa_identity): la
-        # identidad sola dejó de identificar una conversación en cuanto una
-        # Nea atiende a varios negocios. Ver migrations/004_multiorg.sql.
+        # Dos claves, cada una con su índice único parcial (009): en modo
+        # despacho, (organización, conversación del CRM) —el mismo contacto en
+        # dos líneas son dos filas—; en el webhook directo, (organización,
+        # identidad), como desde 004. El ON CONFLICT repite el predicado del
+        # índice: sin él, Postgres no sabe contra cuál resolver.
         #
         # El slug se refresca en cada choque porque puede cambiar (un miembro
         # renombra su subdominio) mientras el id no; guardarlo desactualizado
         # haría que el worker de fondo hablara con una cabecera vieja.
-        row = await self.pool.fetchrow(
-            """
-            INSERT INTO bot_conversation
-              (wa_identity, organization_id, organization_slug)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (organization_id, wa_identity) DO UPDATE
-              SET updated_at = now(), organization_slug = EXCLUDED.organization_slug
-            RETURNING *
-            """,
-            wa_identity,
-            organization_id,
-            organization_slug,
-        )
+        if crm_conversation_id:
+            row = await self.pool.fetchrow(
+                f"""
+                INSERT INTO bot_conversation
+                  (wa_identity, organization_id, organization_slug,
+                   crm_conversation_id, clave_por)
+                VALUES ($1, $2, $3, $4, '{CLAVE_CONVERSACION}')
+                ON CONFLICT (organization_id, crm_conversation_id)
+                  WHERE clave_por = '{CLAVE_CONVERSACION}'
+                DO UPDATE
+                  SET updated_at = now(), organization_slug = EXCLUDED.organization_slug
+                RETURNING *
+                """,
+                wa_identity,
+                organization_id,
+                organization_slug,
+                str(crm_conversation_id),
+            )
+        else:
+            row = await self.pool.fetchrow(
+                f"""
+                INSERT INTO bot_conversation
+                  (wa_identity, organization_id, organization_slug, clave_por)
+                VALUES ($1, $2, $3, '{CLAVE_IDENTIDAD}')
+                ON CONFLICT (organization_id, wa_identity)
+                  WHERE clave_por = '{CLAVE_IDENTIDAD}'
+                DO UPDATE
+                  SET updated_at = now(), organization_slug = EXCLUDED.organization_slug
+                RETURNING *
+                """,
+                wa_identity,
+                organization_id,
+                organization_slug,
+            )
         assert row is not None
         return _conv_from_row(row)
+
+    async def get_conversation(self, conversation_id: int) -> Conversation | None:
+        row = await self.pool.fetchrow(
+            "SELECT * FROM bot_conversation WHERE id = $1", conversation_id
+        )
+        return _conv_from_row(row) if row is not None else None
 
     async def update_conversation(self, conversation_id: int, **fields: Any) -> None:
         unknown = set(fields) - _CONV_COLUMNS
@@ -315,18 +348,25 @@ class PgStore(PgDispatchStore):
         # Una sola sentencia: `bot_message`, `offered_slots` y `pending_send`
         # cuelgan de la fila con ON DELETE CASCADE (001 y 002), así que no hay
         # orden que equivocar ni estado a medias si el proceso muere.
-        row = await self.pool.fetchrow(
-            """
+        #
+        # La fila por conversación (modo despacho) se borra por su id del CRM;
+        # la fila por identidad, solo si sigue siendo de esa conversación.
+        rows = await self.pool.fetch(
+            f"""
             DELETE FROM bot_conversation
-            WHERE organization_id = $1 AND wa_identity = $2
-              AND (crm_conversation_id IS NULL OR crm_conversation_id = $3)
+            WHERE organization_id = $1
+              AND (
+                (clave_por = '{CLAVE_CONVERSACION}' AND crm_conversation_id = $3)
+                OR (clave_por = '{CLAVE_IDENTIDAD}' AND wa_identity = $2
+                    AND (crm_conversation_id IS NULL OR crm_conversation_id = $3))
+              )
             RETURNING id
             """,
             organization_id,
             wa_identity,
             crm_conversation_id,
         )
-        return row is not None
+        return bool(rows)
 
     # ----------------------------------------------------------- mensajes ---
 

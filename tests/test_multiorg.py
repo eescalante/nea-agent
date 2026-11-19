@@ -31,7 +31,7 @@ from app.multiorg import (
     ctx_de_organizacion,
     organizacion_del_despacho,
 )
-from app.state import AppContext, Conversation, MemoryStore, utcnow
+from app.state import AppContext, Conversation, MemoryStore, clave_de_conversacion, utcnow
 
 SECRETO = "un-secreto-de-despliegue-largo-y-aburrido"
 ORG = "org_abc123"
@@ -295,6 +295,35 @@ async def test_sin_organizacion_se_comporta_como_siempre():
     assert una.id == otra.id
 
 
+@pytest.mark.asyncio
+async def test_dos_lineas_en_dos_negocios_son_cuatro_conversaciones():
+    """CA-7 sobre multi-organización: la fila de modo despacho es de
+    (organización, conversación del CRM). Ni la línea ni el negocio se cruzan,
+    ni aunque dos CRM repitan un id de conversación."""
+    store = MemoryStore()
+    telefono = "5215512345678"
+    filas = {
+        (org, cv): await store.get_or_create_conversation(telefono, org, org, cv)
+        for org in ("org_a", "org_b")
+        for cv in ("cv_1", "cv_2")
+    }
+    assert len({c.id for c in filas.values()}) == 4
+    assert all(c.clave_por == "conversacion" for c in filas.values())
+
+    ajustes = Settings(_env_file=None, vocero_mode="cloud")
+    assert clave_de_conversacion(ajustes, "org_a", telefono, "cv_1") != (
+        clave_de_conversacion(ajustes, "org_b", telefono, "cv_1")
+    )
+    assert clave_de_conversacion(ajustes, "org_a", telefono, "cv_1") != (
+        clave_de_conversacion(ajustes, "org_a", telefono, "cv_2")
+    )
+
+    # Olvidar la cv_1 de A no toca la cv_1 de B ni la cv_2 de A.
+    assert await store.forget_conversation("org_a", telefono, "cv_1") is True
+    assert filas[("org_b", "cv_1")].id in store.conversations
+    assert filas[("org_a", "cv_2")].id in store.conversations
+
+
 # ── El arranque ───────────────────────────────────────────────────────────
 #
 # Todo lo demás en esta suite construye el `AppContext` a mano. El arranque de
@@ -403,6 +432,8 @@ def test_el_mapeo_de_conversacion_no_se_deja_ninguna_columna():
         "last_inbound_at": ahora,
         "stalled_at": None,
         "stall_since_message_id": 7,
+        # 009: una fila por conversación del CRM en modo despacho.
+        "clave_por": "conversacion",
     }
     conv = _conv_from_row(fila)
 

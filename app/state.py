@@ -3,6 +3,25 @@
 El acceso a datos está abstraído en el protocolo `Store` para que los unit
 tests corran con `MemoryStore` (sin Postgres). La implementación real con
 asyncpg vive en `app/db.py` (`PgStore`).
+
+## De quién es una conversación (CA-7, multilínea de Nagai)
+
+Hay dos claves, y cada modo usa la suya:
+
+- **Modo despacho** (`VOCERO_MODE=dispatch` o `cloud`): la conversación es la
+  del CRM. Cada evento trae `conversation.id`, y la fila, la memoria, la fase,
+  el seguimiento, los horarios ofrecidos, los envíos diferidos y el candado de
+  turno cuelgan de (organización, `crm_conversation_id`). Con un CRM multilínea
+  el MISMO contacto que le escribe a dos números de la empresa tiene dos
+  conversaciones allá, y aquí también: dos memorias y dos candados que no se
+  esperan entre sí.
+- **Webhook directo** (Meta → Nea, sin CRM que despache): no hay id de
+  conversación hasta leer el contexto, así que la clave sigue siendo
+  (organización, identidad), igual que desde 004.
+
+`Conversation.clave_por` dice cuál de las dos tiene una fila, y
+`clave_de_conversacion` (abajo) es el único sitio que decide cuál toca. Ver
+`migrations/009_conversacion_del_crm.sql`.
 """
 from __future__ import annotations
 
@@ -20,6 +39,28 @@ if TYPE_CHECKING:
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+CLAVE_IDENTIDAD = "identidad"
+CLAVE_CONVERSACION = "conversacion"
+
+
+def clave_de_conversacion(
+    settings: Any,
+    organization_id: str,
+    identity: str,
+    crm_conversation_id: str | None = None,
+) -> tuple[str, str, str]:
+    """La clave de UNA conversación: del candado, de los reintentos, de la fila.
+
+    En modo despacho, si se sabe la conversación del CRM, es esa; si no (el
+    webhook directo, o un camino que todavía no la conoce), la identidad. Se
+    decide por el modo y no solo por tener el id a mano: en el webhook directo
+    el id aparece a medio turno, y cambiar de clave ahí partiría el candado.
+    """
+    if getattr(settings, "recibe_despachos", False) and crm_conversation_id:
+        return (organization_id, CLAVE_CONVERSACION, str(crm_conversation_id))
+    return (organization_id, CLAVE_IDENTIDAD, identity)
 
 
 # Lo único que `update_conversation` puede tocar. Vive aquí y no en db.py para
@@ -58,6 +99,9 @@ class Conversation:
     # misma persona puede escribirle a dos.
     organization_id: str = ""
     organization_slug: str = ""
+    # Por qué se identifica esta fila: 'identidad' (webhook directo) o
+    # 'conversacion' (modo despacho, una fila por conversación del CRM).
+    clave_por: str = CLAVE_IDENTIDAD
     phase: str = "descubrimiento"  # descubrimiento|insight|salida|agendando|cerrada
     greeted: bool = False
     media_notice_sent: bool = False
@@ -187,7 +231,15 @@ class Store(Protocol):
         wa_identity: str,
         organization_id: str = "",
         organization_slug: str = "",
-    ) -> Conversation: ...
+        crm_conversation_id: str | None = None,
+    ) -> Conversation:
+        """Sin `crm_conversation_id`, la fila de (organización, identidad).
+        Con él (modo despacho), la de (organización, conversación del CRM):
+        el mismo contacto en dos líneas son dos filas."""
+        ...
+    async def get_conversation(self, conversation_id: int) -> Conversation | None:
+        """La fila por su id, o None si ya no existe (se olvidó)."""
+        ...
     async def update_conversation(self, conversation_id: int, **fields: Any) -> None: ...
     async def reset_conversation(self, conversation_id: int) -> None:
         """Borra historial + slots y regresa la conversación a estado inicial
@@ -199,8 +251,9 @@ class Store(Protocol):
         """Borra TODO lo que Nea guarda de esa conversación: la fila, su
         historial, sus horarios ofrecidos y sus envíos pendientes.
 
-        Solo si la fila sigue siendo de `crm_conversation_id` (o todavía no
-        sabe de cuál es). El aviso de borrado puede llegar tarde: si la persona
+        La fila por conversación de `crm_conversation_id` (modo despacho) se
+        borra siempre. La fila por identidad, solo si sigue siendo de
+        `crm_conversation_id` (o todavía no sabe de cuál es). El aviso de borrado puede llegar tarde: si la persona
         ya volvió a escribir, la fila es de la conversación NUEVA y borrarla
         le quitaría la memoria a la que no se eliminó. True si borró algo."""
         ...
@@ -271,6 +324,7 @@ class MemoryStore(MemoryDispatchStore):
         self.relays: dict[int, RelayItem] = {}
         self.conversations: dict[int, Conversation] = {}
         self._conv_by_identity: dict[tuple[str, str], int] = {}
+        self._conv_by_crm: dict[tuple[str, str], int] = {}
         self.messages: list[BotMessage] = []
         self.offered: dict[int, list[OfferedSlot]] = {}
         self.pending_sends: dict[int, PendingSend] = {}
@@ -350,9 +404,15 @@ class MemoryStore(MemoryDispatchStore):
         wa_identity: str,
         organization_id: str = "",
         organization_slug: str = "",
+        crm_conversation_id: str | None = None,
     ) -> Conversation:
-        clave = (organization_id, wa_identity)
-        cid = self._conv_by_identity.get(clave)
+        if crm_conversation_id:
+            indice = self._conv_by_crm
+            clave = (organization_id, str(crm_conversation_id))
+        else:
+            indice = self._conv_by_identity
+            clave = (organization_id, wa_identity)
+        cid = indice.get(clave)
         if cid is not None:
             conv = self.conversations[cid]
             # Igual que el ON CONFLICT de PgStore: el slug se refresca, porque
@@ -365,10 +425,15 @@ class MemoryStore(MemoryDispatchStore):
             wa_identity=wa_identity,
             organization_id=organization_id,
             organization_slug=organization_slug,
+            crm_conversation_id=str(crm_conversation_id) if crm_conversation_id else None,
+            clave_por=CLAVE_CONVERSACION if crm_conversation_id else CLAVE_IDENTIDAD,
         )
         self.conversations[cid] = conv
-        self._conv_by_identity[clave] = cid
+        indice[clave] = cid
         return conv
+
+    async def get_conversation(self, conversation_id: int) -> Conversation | None:
+        return self.conversations.get(conversation_id)
 
     async def update_conversation(self, conversation_id: int, **fields: Any) -> None:
         desconocidas = set(fields) - COLUMNAS_DE_CONVERSACION
@@ -396,20 +461,27 @@ class MemoryStore(MemoryDispatchStore):
     async def forget_conversation(
         self, organization_id: str, wa_identity: str, crm_conversation_id: str
     ) -> bool:
+        borradas: list[int] = []
+        clave_crm = (organization_id, crm_conversation_id)
+        cid = self._conv_by_crm.pop(clave_crm, None)
+        if cid is not None:
+            borradas.append(cid)
         clave = (organization_id, wa_identity)
         cid = self._conv_by_identity.get(clave)
-        if cid is None:
+        if cid is not None:
+            actual = self.conversations[cid].crm_conversation_id
+            if actual is None or actual == crm_conversation_id:
+                del self._conv_by_identity[clave]
+                borradas.append(cid)
+        if not borradas:
             return False
-        actual = self.conversations[cid].crm_conversation_id
-        if actual is not None and actual != crm_conversation_id:
-            return False
-        del self._conv_by_identity[clave]
-        del self.conversations[cid]
-        self.messages = [m for m in self.messages if m.conversation_id != cid]
-        self.offered.pop(cid, None)
+        for cid in borradas:
+            del self.conversations[cid]
+            self.offered.pop(cid, None)
+        self.messages = [m for m in self.messages if m.conversation_id not in borradas]
         self.pending_sends = {
             pid: p for pid, p in self.pending_sends.items()
-            if p.conversation_id != cid
+            if p.conversation_id not in borradas
         }
         return True
 
@@ -543,15 +615,17 @@ class AppContext:
     # AGENDA allá llega sin reiniciar Nea. None = sin sonda (pruebas que fijan
     # `agenda_enabled` a mano).
     agenda_sonda: Any | None = None
-    # Un candado por identidad: los turnos de UNA conversación se serializan.
+    # Un candado por conversación (`clave_de_conversacion`): los turnos de UNA
+    # conversación se serializan; los de dos conversaciones del mismo contacto
+    # (dos líneas, en modo despacho) no se esperan entre sí.
     # Sin esto, una ráfaga que llega mientras el turno anterior sigue en vuelo
     # abre un segundo turno con contexto viejo (se reservó una cita antes de
     # leer el mensaje que la corregía, y salieron dos respuestas encimadas).
-    turn_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
-    # Cuántos turnos tienen tomado (o esperan) el candado de esa identidad.
-    turn_lock_users: dict[str, int] = field(default_factory=dict)
+    turn_locks: dict[Any, asyncio.Lock] = field(default_factory=dict)
+    # Cuántos turnos tienen tomado (o esperan) el candado de esa conversación.
+    turn_lock_users: dict[Any, int] = field(default_factory=dict)
     # Ráfagas que no alcanzaron al CRM y esperan su reintento (app/turn.py),
-    # por (organización, identidad): a lo más UNA por conversación, y el
+    # por `clave_de_conversacion`: a lo más UNA por conversación, y el
     # mensaje nuevo que llega mientras tanto se la lleva consigo. Se comparte
     # con los contextos por organización (`replace` copia la referencia).
-    turnos_pendientes: dict[tuple[str, str], Any] = field(default_factory=dict)
+    turnos_pendientes: dict[tuple[str, str, str], Any] = field(default_factory=dict)

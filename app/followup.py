@@ -18,9 +18,9 @@ from app.formato import a_whatsapp
 from app.llm import LlmExhausted, conversacion_actual
 from app.profile import resolve_profile
 from app.prompt import FOLLOWUP_INSTRUCTION, mensaje_de_sistema, partes_del_prompt
-from app.state import AppContext, Conversation, utcnow
+from app.state import CLAVE_CONVERSACION, AppContext, Conversation, utcnow
 from app.multiorg import ctx_de_organizacion
-from app.turn import conversation_lock
+from app.turn import _pedir_contexto, conversation_lock
 from app.turn import _agent_tz
 
 logger = logging.getLogger("nea.followup")
@@ -67,7 +67,11 @@ class FollowupWorker:
                         conv.wa_identity,
                     )
                     continue
-                async with conversation_lock(self._ctx, conv.wa_identity):
+                # El candado de ESA conversación: en modo despacho, la del CRM
+                # (dos líneas del mismo contacto tienen dos candados).
+                async with conversation_lock(
+                    self._ctx, conv.wa_identity, conv.crm_conversation_id
+                ):
                     await self._push(ctx, conv, ultimo_inbound)
             except Exception:
                 logger.exception(
@@ -83,9 +87,13 @@ class FollowupWorker:
     ) -> None:
         # Si mientras esperábamos el candado el lead escribió, el empujón sobra:
         # ya hay conversación viva y "¿seguimos?" quedaría fuera de lugar.
-        fresca = await ctx.store.get_or_create_conversation(
-            conv.wa_identity, conv.organization_id, conv.organization_slug
-        )
+        # Por su id, no por identidad: con una fila por conversación del CRM
+        # (modo despacho), la identidad traería la de otra línea. Si ya no
+        # existe, la conversación se olvidó mientras tanto: no hay a quién.
+        fresca = await ctx.store.get_conversation(conv.id)
+        if fresca is None:
+            logger.info("followup %s: la conversación se olvidó — omitido", conv.wa_identity)
+            return
         if fresca.last_inbound_at != ultimo_inbound:
             logger.info(
                 "followup %s: el lead escribió mientras tanto — omitido",
@@ -101,7 +109,11 @@ class FollowupWorker:
             registrar(conv.wa_identity, conv.crm_conversation_id)
 
         try:
-            context = await ctx.crm.get_context(conv.wa_identity)
+            context = await _pedir_contexto(
+                ctx,
+                conv.wa_identity,
+                conv.crm_conversation_id if conv.clave_por == CLAVE_CONVERSACION else None,
+            )
         except CrmError as exc:
             logger.warning("followup %s: CRM inaccesible (%s) — omitido", conv.wa_identity, exc)
             return

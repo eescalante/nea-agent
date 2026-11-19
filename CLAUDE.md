@@ -41,7 +41,13 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
   Nea atiende a varios negocios. Tres reglas que no se negocian:
   1. **La conversación es de (organización, identidad)**, nunca de la
      identidad sola. La misma persona puede escribirle a dos negocios, y con
-     la clave global el historial de uno entraba en el prompt del otro.
+     la clave global el historial de uno entraba en el prompt del otro. En
+     modo despacho (`cloud` o `dispatch`) va más lejos: la conversación es la
+     del CRM, (organización, `conversation.id`), porque con un CRM multilínea
+     el mismo contacto tiene una conversación por línea. Memoria, fase,
+     seguimiento, horarios, envíos diferidos y candado de turno cuelgan de
+     ella (`clave_de_conversacion` en `app/state.py`, migración 009). El
+     webhook directo sigue con la identidad.
   2. **Quien piensa es el CRM**, no Nea. El cliente del modelo apunta a
      `/api/brains/llm` con la credencial derivada, y el CRM le pone la llave
      del miembro al reenviar. Si el CRM no ofrece pensar, NO se piensa — ni en

@@ -108,7 +108,7 @@ async def test_un_5xx_tambien_es_pasajero(respx_mock):
     crm = CrmIntermitente(lambda: httpx.Response(503))
     routes["context"].mock(side_effect=crm)
     await turn.handle_flush(ctx, IDENTITY, [_msg("wamid.5xx", "hola")])
-    assert IDENTITY in {k[1] for k in ctx.turnos_pendientes}
+    assert IDENTITY in {k[-1] for k in ctx.turnos_pendientes}
     crm.caido = False
     assert await _hasta(lambda: routes["messages"].called)
     assert routes["messages"].call_count == 1

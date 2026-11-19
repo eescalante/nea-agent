@@ -220,7 +220,9 @@ async def olvidar(ctx: AppContext, payload: dict[str, Any]) -> None:
     cola = org[0] if org else ctx.settings.crm_organization
     # Con el candado del turno: en cloud la cola ya los pone en fila, pero el
     # seguimiento y el reintento de envíos corren por fuera de ella.
-    async with conversation_lock(ctx, identity):
+    # El candado es el de ESA conversación (modo despacho: la del CRM). La otra
+    # línea del mismo contacto sigue con su memoria y su candado intactos.
+    async with conversation_lock(ctx, identity, conversation_id):
         borrada = await ctx.store.forget_conversation(org_id, identity, conversation_id)
         await ctx.store.forget_dispatches(cola, conversation_id, str(payload["dispatchId"]))
     logger.info(
@@ -230,11 +232,41 @@ async def olvidar(ctx: AppContext, payload: dict[str, Any]) -> None:
     )
 
 
+def linea_del_despacho(payload: dict[str, Any]) -> dict[str, str] | None:
+    """La línea por la que llegó la conversación, si el CRM la manda.
+
+    Nagai (spec 068) la agrega al final del evento, y solo cuando hay línea:
+    `line: { id, name, channel, mode }`. Es informativa —la clave de la
+    conversación ya es `conversation.id`, que distingue las líneas—, así que
+    un evento sin ella, o con ella mal formada, se procesa igual.
+    """
+    linea = payload.get("line")
+    if not isinstance(linea, dict) or not isinstance(linea.get("id"), str):
+        return None
+    return {
+        k: str(linea[k])
+        for k in ("id", "name", "channel", "mode")
+        if isinstance(linea.get(k), str)
+    }
+
+
 async def _procesar(ctx: AppContext, payload: dict[str, Any], *, durable: bool = False) -> None:
     dispatch_id = str(payload.get("dispatchId") or "")
-    logger.info("despacho %s: tomado por el worker", dispatch_id)
     conversation = payload.get("conversation") or {}
     conversation_id = str(conversation.get("id") or "")
+    linea = linea_del_despacho(payload)
+    if linea is not None:
+        logger.info(
+            "despacho %s: tomado por el worker (%s, línea %s «%s» %s/%s)",
+            dispatch_id,
+            conversation_id,
+            linea["id"],
+            linea.get("name", ""),
+            linea.get("channel", "?"),
+            linea.get("mode", "?"),
+        )
+    else:
+        logger.info("despacho %s: tomado por el worker (%s)", dispatch_id, conversation_id)
 
     mensajes = mensajes_del_despacho(payload)
     if not mensajes or not conversation_id:

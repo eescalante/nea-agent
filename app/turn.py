@@ -33,7 +33,13 @@ from app.stall import (
 )
 from app.profile import resolve_profile
 from app.prompt import mensaje_de_sistema, partes_del_prompt
-from app.state import AppContext, InboundMessage, utcnow
+from app.state import (
+    CLAVE_CONVERSACION,
+    AppContext,
+    InboundMessage,
+    clave_de_conversacion,
+    utcnow,
+)
 from app.tools import VOICE_MAX_CHARS, ToolRuntime, tool_schemas
 
 logger = logging.getLogger("nea.turn")
@@ -130,8 +136,15 @@ def _agent_tz(settings: Any) -> ZoneInfo:
 
 
 @asynccontextmanager
-async def conversation_lock(ctx: AppContext, identity: str) -> AsyncIterator[None]:
+async def conversation_lock(
+    ctx: AppContext, identity: str, crm_conversation_id: str | None = None
+) -> AsyncIterator[None]:
     """Serializa los turnos de UNA conversación.
+
+    UNA conversación es la de `clave_de_conversacion`: en modo despacho, la
+    del CRM (`crm_conversation_id`), así que el mismo contacto escribiéndole a
+    dos líneas tiene dos candados y sus turnos corren a la vez; en el webhook
+    directo, la identidad, como siempre.
 
     El coalescer agrupa ráfagas por debounce, pero nada le impide disparar un
     turno nuevo mientras el anterior sigue corriendo: el mensaje que llega
@@ -142,27 +155,34 @@ async def conversation_lock(ctx: AppContext, identity: str) -> AsyncIterator[Non
     Con el candado, el turno tardío espera, y al arrancar re-lee el contexto
     del CRM y el historial — que ya incluyen lo que hizo el turno anterior.
     """
-    lock = ctx.turn_locks.get(identity)
+    clave = _clave(ctx, identity, crm_conversation_id)
+    lock = ctx.turn_locks.get(clave)
     if lock is None:
-        lock = ctx.turn_locks[identity] = asyncio.Lock()
+        lock = ctx.turn_locks[clave] = asyncio.Lock()
     # El conteo sube ANTES del await: quien ya tiene el objeto en mano queda
     # contado, así que el candado nunca se recicla debajo de un turno que
     # espera (y el diccionario no crece sin fin con cada lead histórico).
-    ctx.turn_lock_users[identity] = ctx.turn_lock_users.get(identity, 0) + 1
+    ctx.turn_lock_users[clave] = ctx.turn_lock_users.get(clave, 0) + 1
     if lock.locked():
         logger.info(
-            "turno de %s en vuelo — el mensaje nuevo espera su turno", identity
+            "turno de %s en vuelo — el mensaje nuevo espera su turno",
+            _quien(identity, crm_conversation_id),
         )
     try:
         async with lock:
             yield
     finally:
-        remaining = ctx.turn_lock_users.get(identity, 1) - 1
+        remaining = ctx.turn_lock_users.get(clave, 1) - 1
         if remaining <= 0:
-            ctx.turn_lock_users.pop(identity, None)
-            ctx.turn_locks.pop(identity, None)
+            ctx.turn_lock_users.pop(clave, None)
+            ctx.turn_locks.pop(clave, None)
         else:
-            ctx.turn_lock_users[identity] = remaining
+            ctx.turn_lock_users[clave] = remaining
+
+
+def _quien(identity: str, crm_conversation_id: str | None) -> str:
+    """Para los logs: la identidad y, si se sabe, de qué conversación."""
+    return f"{identity} ({crm_conversation_id})" if crm_conversation_id else identity
 
 
 @dataclass
@@ -211,10 +231,15 @@ class _Pendiente:
     despertar: asyncio.Event = field(default_factory=asyncio.Event)
 
 
-def _clave(ctx: AppContext, identity: str) -> tuple[str, str]:
-    # La conversación es de (organización, identidad): con varios negocios,
-    # la ráfaga de uno no se puede fusionar con la de otro.
-    return ((ctx.organizacion or ("", ""))[0], identity)
+def _clave(
+    ctx: AppContext, identity: str, crm_conversation_id: str | None = None
+) -> tuple[str, str, str]:
+    # La conversación es de una organización —con varios negocios, la ráfaga
+    # de uno no se puede fusionar con la de otro— y, en modo despacho, es la
+    # del CRM: dos líneas del mismo contacto no se fusionan ni se esperan.
+    return clave_de_conversacion(
+        ctx.settings, (ctx.organizacion or ("", ""))[0], identity, crm_conversation_id
+    )
 
 
 def _marcas(items: list[Any]) -> list[str]:
@@ -271,9 +296,9 @@ async def handle_flush(
     # Costo por conversación: lo que piense este turno lleva su conversación
     # (o ninguna, para no heredar la del turno anterior de este mismo hilo).
     conversacion_actual.set(turno.crm_conversation_id)
-    clave = _clave(ctx, identity)
+    clave = _clave(ctx, identity, turno.crm_conversation_id)
     try:
-        async with conversation_lock(ctx, identity):
+        async with conversation_lock(ctx, identity, turno.crm_conversation_id):
             pendiente = ctx.turnos_pendientes.get(clave)
             if reintento is not None and pendiente is not reintento:
                 return  # un mensaje nuevo ya se llevó esta ráfaga
@@ -367,7 +392,7 @@ def _reprogramar(
     pendiente = _Pendiente(
         items=list(items), fallas=fallas, crm_conversation_id=turno.crm_conversation_id
     )
-    ctx.turnos_pendientes[_clave(ctx, identity)] = pendiente
+    ctx.turnos_pendientes[_clave(ctx, identity, turno.crm_conversation_id)] = pendiente
     marcas = ", ".join(_marcas(items)) or "ninguno"
     if fallas <= len(esperas):
         espera = esperas[fallas - 1]
@@ -436,7 +461,7 @@ async def _vigilar(ctx: AppContext, identity: str, pendiente: _Pendiente) -> Non
     entrega) con la IA encendida y nadie le contestaba. Best-effort: nunca
     lanza, y un mensaje nuevo del lead la cancela (su turno se lleva la ráfaga).
     """
-    clave = _clave(ctx, identity)
+    clave = _clave(ctx, identity, pendiente.crm_conversation_id)
     marcas = _marcas(pendiente.items)
     limite = utcnow() + VIGILANCIA_MAXIMA
     try:
@@ -445,7 +470,9 @@ async def _vigilar(ctx: AppContext, identity: str, pendiente: _Pendiente) -> Non
             if ctx.turnos_pendientes.get(clave) is not pendiente:
                 return
             try:
-                context = await ctx.crm.get_context(identity)
+                context = await _pedir_contexto(
+                    ctx, identity, _por_conversacion(ctx, pendiente.crm_conversation_id)
+                )
             except CrmError:
                 continue  # sigue sin contestar
             if context is None:
@@ -460,7 +487,7 @@ async def _vigilar(ctx: AppContext, identity: str, pendiente: _Pendiente) -> Non
                 break
             info = context.get("conversation") or {}
             conv_id = info.get("id") or pendiente.crm_conversation_id
-            async with conversation_lock(ctx, identity):
+            async with conversation_lock(ctx, identity, pendiente.crm_conversation_id):
                 if ctx.turnos_pendientes.get(clave) is not pendiente:
                     return  # un mensaje nuevo se la llevó mientras tanto
                 del ctx.turnos_pendientes[clave]
@@ -580,8 +607,15 @@ async def run_turn(
     # una Nea de un solo negocio la tupla es vacía y todo queda igual que
     # siempre; con varias, es lo que impide que el mismo teléfono escribiendo
     # a dos negocios comparta historial. Ver migrations/004_multiorg.sql.
+    #
+    # Y en modo despacho es de la conversación del CRM que el despacho trajo
+    # (CA-7): el mismo contacto escribiéndole a dos líneas de la empresa son
+    # dos filas, con su memoria, su fase y su seguimiento cada una.
     org_id, org_slug = ctx.organizacion or ("", "")
-    conv = await ctx.store.get_or_create_conversation(identity, org_id, org_slug)
+    por_conversacion = _por_conversacion(ctx, turno.crm_conversation_id)
+    conv = await ctx.store.get_or_create_conversation(
+        identity, org_id, org_slug, por_conversacion
+    )
     # En cloud el despacho ya dijo de qué conversación del CRM es este turno:
     # si no es la que Nea recordaba, se olvida ANTES de los gates de abajo,
     # que leen esa memoria (un cierre sin rumbo viejo callaría el primer
@@ -637,7 +671,9 @@ async def run_turn(
     # (handle_flush). Solo el 404 de verdad —no conoce la identidad y el
     # relay ya no tiene nada que entregarle— termina en silencio.
     try:
-        context = await _fetch_context(ctx, identity, _marcas(inbound))
+        context = await _fetch_context(
+            ctx, identity, _marcas(inbound), conversation_id=por_conversacion
+        )
     except CrmUnreachable as exc:
         raise TurnoSinCrm(str(exc)) from exc
     if context is None:
@@ -963,6 +999,11 @@ async def _olvidar_si_es_otra(
     historial de la que se eliminó sería justo lo que el borrado prometió que
     no iba a pasar.
     """
+    if getattr(conv, "clave_por", None) == CLAVE_CONVERSACION:
+        # La fila ES de esa conversación del CRM: no hay otra que olvidar. Un
+        # id distinto aquí sería la otra línea del mismo contacto, cuya memoria
+        # vive en su propia fila y no se toca.
+        return conv
     anterior = conv.crm_conversation_id
     if not crm_conversation_id or not anterior or anterior == crm_conversation_id:
         return conv
@@ -1057,8 +1098,37 @@ async def _run_refrescar(ctx: AppContext, conv: Any, identity: str) -> None:
         )
 
 
+def _por_conversacion(ctx: AppContext, crm_conversation_id: str | None) -> str | None:
+    """La conversación del CRM que hace de clave, o None si la clave es la identidad.
+
+    Solo en modo despacho: en el webhook directo la identidad sigue siendo la
+    conversación, aunque el turno ya sepa el id del CRM.
+    """
+    if getattr(ctx.settings, "recibe_despachos", False) and crm_conversation_id:
+        return str(crm_conversation_id)
+    return None
+
+
+async def _pedir_contexto(
+    ctx: AppContext, identity: str, conversation_id: str | None
+) -> dict[str, Any] | None:
+    """El contexto de ESA conversación si se sabe cuál; si no, el de la identidad.
+
+    Con un CRM multilínea la identidad sola es ambigua: el mismo contacto
+    puede tener una conversación por línea, y pedir por teléfono traería la
+    de otra línea.
+    """
+    if conversation_id:
+        return await ctx.crm.get_context(identity, conversation_id=conversation_id)
+    return await ctx.crm.get_context(identity)
+
+
 async def _fetch_context(
-    ctx: AppContext, identity: str, marcas: list[str] | None = None
+    ctx: AppContext,
+    identity: str,
+    marcas: list[str] | None = None,
+    *,
+    conversation_id: str | None = None,
 ) -> dict[str, Any] | None:
     """El contexto del CRM, o None si el CRM dice que no conoce la identidad.
 
@@ -1073,7 +1143,7 @@ async def _fetch_context(
     for attempt in range(CONTEXT_ATTEMPTS):
         caida, no_existe = None, False
         try:
-            context = await ctx.crm.get_context(identity)
+            context = await _pedir_contexto(ctx, identity, conversation_id)
         except CrmUnreachable as exc:
             logger.warning(
                 "context de %s: el CRM no contestó (intento %d): %s",
@@ -1106,7 +1176,7 @@ async def _fetch_context(
         # esperando la siguiente vuelta de reintentos.
         if await _esperar_al_relay(ctx, marcas):
             try:
-                context = await ctx.crm.get_context(identity)
+                context = await _pedir_contexto(ctx, identity, conversation_id)
             except CrmError as exc:
                 logger.warning("context de %s tras el relay: %s", identity, exc)
                 context = None

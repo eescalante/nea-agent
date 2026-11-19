@@ -8,6 +8,18 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ### Nuevo
 
+- **En modo despacho, cada conversación del CRM es una conversación de Nea**
+  (multilínea, spec 068 de Nagai). Memoria, fase, seguimiento, horarios
+  ofrecidos, envíos diferidos y candado de turno se guardan por
+  (organización, `conversation.id`), no por (organización, identidad): el
+  mismo contacto que le escribe a dos líneas de la empresa tiene dos
+  memorias, y sus turnos corren a la vez. El contexto se pide al CRM por
+  `conversationId`. El `line` opcional del despacho se lee para los logs y se
+  ignora si no viene. El webhook directo (Meta → Nea) no cambia.
+  **Al actualizar:** la migración `009_conversacion_del_crm.sql` aplica sola
+  al arrancar. No migra datos: una Nea en modo despacho empieza de cero cada
+  conversación la primera vez que la ve tras el cambio.
+
 - **Responde por nota de voz cuando el lead mandó una nota de voz** (apagado
   por defecto). Si el CRM trae `profile.voiceReplyToAudio` en `true` y la voz
   está habilitada, el turno cuyo mensaje incluye una nota de voz sale como

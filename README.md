@@ -144,7 +144,9 @@ clave de LLM son los de él.
   Si el CRM no ofrece pensar, Nea se calla y deja la conversación a un humano.
 - **Las conversaciones no se cruzan.** La clave es (organización, identidad):
   la misma persona puede escribirle a dos negocios sin que el historial de uno
-  aparezca en el prompt del otro.
+  aparezca en el prompt del otro. Y en modo despacho es la conversación del
+  CRM (`conversation.id`): el mismo contacto escribiéndole a dos líneas de un
+  negocio tiene dos memorias y dos turnos que no se esperan.
 
 #### Cuando el CRM elimina una conversación
 

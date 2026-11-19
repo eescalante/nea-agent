@@ -10,7 +10,7 @@ import pytest
 from app.main import create_app
 from app.dispatch_worker import drain_one
 from app.media import _pdf_text
-from tests.conftest import make_ctx, make_settings
+from tests.conftest import crm_context, make_ctx, make_settings
 
 
 def payload():
@@ -96,3 +96,28 @@ async def test_pdf_parser_isolated_valid_and_corrupt():
     pdf.write(buf)
     assert await _pdf_text(buf.getvalue()) == ""
     assert await _pdf_text(b"not a pdf") is None
+
+
+async def test_dos_lineas_del_mismo_contacto_salen_de_la_cola_como_dos_conversaciones(respx_mock):
+    """CA-7 por la cola durable: el mismo contacto en dos conversaciones del
+    CRM (dos líneas) se procesa en dos filas, cada una con su memoria."""
+    ctx = make_ctx(make_settings(vocero_mode="dispatch"))
+    respx_mock.get("http://crm.test/api/bot/context").mock(side_effect=lambda r: httpx.Response(
+        200, json=crm_context(conv_id=r.url.params["conversationId"])))
+    enviados = respx_mock.post("http://crm.test/api/bot/messages").mock(
+        return_value=httpx.Response(200, json={"messageId": "m"}))
+    respx_mock.post("http://crm.test/api/bot/typing").mock(return_value=httpx.Response(200, json={}))
+    for n, cv in enumerate(("cv_linea_a", "cv_linea_b")):
+        await ctx.store.enqueue_dispatch("", {**payload(), "dispatchId": f"dsp_{n}",
+            "conversation": {"id": cv}, "messages": [{"id": f"msg_{n}", "type": "text", "text": f"hola {cv}"}],
+            "line": {"id": f"ln_{n}", "name": cv, "channel": "whatsapp", "mode": "cloud"}})
+    assert await drain_one(ctx)
+    assert await drain_one(ctx)
+    assert not await drain_one(ctx)
+
+    filas = {c.crm_conversation_id: c for c in ctx.store.conversations.values()}
+    assert set(filas) == {"cv_linea_a", "cv_linea_b"}
+    for cv, conv in filas.items():
+        assert [m.content for m in ctx.store.messages if m.conversation_id == conv.id and m.role == "user"] == [f"hola {cv}"]
+    assert sorted(json.loads(c.request.content)["conversationId"] for c in enviados.calls) == ["cv_linea_a", "cv_linea_b"]
+    await ctx.crm.aclose()

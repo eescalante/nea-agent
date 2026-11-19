@@ -238,7 +238,9 @@ class BrainsCrmClient(CrmClient):
         data: dict[str, Any] = resp.json()
         return data
 
-    async def get_context(self, wa_identity: str) -> dict[str, Any] | None:
+    async def get_context(
+        self, wa_identity: str, conversation_id: str | None = None
+    ) -> dict[str, Any] | None:
         """El contexto, pedido por conversación y no por identidad.
 
         `/api/brains/context` no acepta `waIdentity`: el ámbito de un cerebro
@@ -249,7 +251,10 @@ class BrainsCrmClient(CrmClient):
         camino de siempre cuando el CRM aún no conoce la identidad: el turno se
         queda callado en vez de inventar.
         """
-        conversation_id = self._conversaciones.get(wa_identity)
+        # La que pide el turno, si la dice: con un CRM multilínea el mismo
+        # contacto tiene una conversación por línea, y la recordada por
+        # identidad puede ser la de la otra (el último despacho la pisa).
+        conversation_id = conversation_id or self._conversaciones.get(wa_identity)
         if not conversation_id:
             logger.warning(
                 "identidad %s sin conversación conocida — ¿llegó por el despacho?",
