@@ -376,8 +376,11 @@ class BrainsCrmClient(CrmClient):
         self,
         conversation_id: str,
         start_utc: str,
-        reminder_consent: bool = False,
         notes: str | None = None,  # Fork Quasar: el contrato cloud no lleva notas; se ignora
+        *,
+        # Después de `notes` y solo por nombre, para respetar la firma de
+        # `CrmClient.create_booking` (los llamados ya lo pasan por nombre).
+        reminder_consent: bool = False,
     ) -> dict[str, Any]:
         return await self._agendar("POST", conversation_id, start_utc, "bookings", reminder_consent=reminder_consent)
 

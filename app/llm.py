@@ -16,11 +16,12 @@ import base64
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from contextvars import ContextVar
 
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
 logger = logging.getLogger("nea.llm")
 
@@ -135,8 +136,8 @@ class OpenAiLlm:
         # OpenRouter directo, otro compatible u OpenAI directo, nadie los
         # marcaría y algún proveedor podría rechazar el formato: un solo texto.
         # Nea nunca pone `cache_control`.
-        self._manda_conversacion = bool(base_url) and base_url.rstrip("/").endswith(
-            "/api/bot/llm"
+        self._manda_conversacion = bool(
+            base_url and base_url.rstrip("/").endswith("/api/bot/llm")
         )
         self.mensaje_en_bloques = self._manda_conversacion
         # Los dos ajustes de velocidad. Se deciden una vez, aqui, y viajan en
@@ -221,7 +222,9 @@ class OpenAiLlm:
                 resp = await self._client.chat.completions.create(
                     **self._por_conversacion(),
                     model=self._transcribe_model,
-                    messages=[
+                    # El formato del audio llega como texto libre: el SDK lo
+                    # tipa como literal, así que el mensaje se declara entero.
+                    messages=cast(list[ChatCompletionMessageParam], [
                         {
                             "role": "user",
                             "content": [
@@ -240,7 +243,7 @@ class OpenAiLlm:
                                 },
                             ],
                         }
-                    ],
+                    ]),
                 )
                 text = (resp.choices[0].message.content or "").strip()
                 if text:
@@ -318,7 +321,11 @@ class OpenAiLlm:
                     kwargs["extra_body"] = extra
                 kwargs.update(self._por_conversacion())
                 resp = await self._client.chat.completions.create(
-                    model=self._model, messages=messages, **kwargs
+                    # Los mensajes se arman como dict en todo Nea; el SDK los
+                    # quiere como sus TypedDict, que tienen la misma forma.
+                    model=self._model,
+                    messages=cast(list[ChatCompletionMessageParam], messages),
+                    **kwargs,
                 )
                 u = getattr(resp, "usage", None)
                 if u is not None:

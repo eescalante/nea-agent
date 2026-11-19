@@ -2,3 +2,11 @@
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+
+# Typecheck: `python -m mypy app`. asyncpg no trae tipos propios.
+[tool.mypy]
+files = ["app"]
+
+[[tool.mypy.overrides]]
+module = ["asyncpg", "asyncpg.*"]
+ignore_missing_imports = true

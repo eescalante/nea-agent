@@ -147,6 +147,8 @@ class FollowupWorker:
                     conv.wa_identity,
                 )
                 return
+            # En multi-organización el arranque siempre arma el registro.
+            assert ctx.registro is not None
             ctx = replace(
                 ctx,
                 llm=ctx.registro.llm(

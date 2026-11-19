@@ -175,6 +175,8 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
             # - cloud de un negocio: el cliente de una sola organización.
             # - sin bandera: exactamente lo de toda la vida.
             registro = None
+            # Tres clientes distintos, sin base común: igual que `AppContext.crm`.
+            crm: Any
             if settings.multi_org:
                 registro = RegistroDeOrganizaciones(
                     settings.crm_base_url,
